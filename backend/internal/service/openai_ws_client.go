@@ -1,0 +1,504 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamroute"
+	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
+	coderws "github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+	"go.uber.org/zap"
+)
+
+const openAIWSMessageReadLimitBytes int64 = 16 * 1024 * 1024
+const (
+	openAIWSProxyTransportMaxIdleConns        = 128
+	openAIWSProxyTransportMaxIdleConnsPerHost = 64
+	openAIWSProxyTransportIdleConnTimeout     = 90 * time.Second
+	openAIWSProxyClientCacheMaxEntries        = 256
+	openAIWSProxyClientCacheIdleTTL           = 15 * time.Minute
+)
+
+type OpenAIWSTransportMetricsSnapshot struct {
+	ProxyClientCacheHits   int64   `json:"proxy_client_cache_hits"`
+	ProxyClientCacheMisses int64   `json:"proxy_client_cache_misses"`
+	TransportReuseRatio    float64 `json:"transport_reuse_ratio"`
+}
+
+// openAIWSPreparedJSON is borrowed, valid JSON from our encoder. WriteJSON must
+// consume it synchronously and must not retain it. Keep this private rather than
+// treating arbitrary json.RawMessage values as prevalidated JSON.
+type openAIWSPreparedJSON []byte
+
+// openAIWSClientConn 抽象 WS 客户端连接，便于替换底层实现。
+type openAIWSClientConn interface {
+	WriteJSON(ctx context.Context, value any) error
+	ReadMessage(ctx context.Context) ([]byte, error)
+	Ping(ctx context.Context) error
+	Close() error
+}
+
+// openAIWSIdlePingCapable is intentionally separate from openAIWSClientConn.
+// A pool probe happens while no goroutine is reading an idle connection, which
+// is not safe for every WebSocket implementation.
+type openAIWSIdlePingCapable interface {
+	SupportsIdlePingWithoutReader() bool
+}
+
+// openAIWSReaderLoopCapable 声明该实现的控制帧只在阻塞读期间被消费，
+// 连接池需为其常驻一个读循环，否则空闲连接无法应答上游 ping。
+type openAIWSReaderLoopCapable interface {
+	RequiresReaderLoop() bool
+}
+
+// openAIWSUpstreamPingCounter 报告连接收到过多少个上游 ping 帧，用于核对读循环是否在应答保活。
+type openAIWSUpstreamPingCounter interface {
+	UpstreamPingCount() int64
+}
+
+// openAIWSForceCloser 不做关闭握手直接切断连接，用于对端已不响应的场景。
+type openAIWSForceCloser interface {
+	CloseNow() error
+}
+
+// openAIWSClientDialer 抽象 WS 建连器。
+type openAIWSClientDialer interface {
+	Dial(ctx context.Context, wsURL string, headers http.Header, proxyURL string) (openAIWSClientConn, int, http.Header, error)
+}
+
+type openAIWSTransportMetricsDialer interface {
+	SnapshotTransportMetrics() OpenAIWSTransportMetricsSnapshot
+}
+
+func newDefaultOpenAIWSClientDialer() openAIWSClientDialer {
+	return newConfiguredOpenAIWSClientDialer(nil)
+}
+
+func newConfiguredOpenAIWSClientDialer(cfg *config.Config) openAIWSClientDialer {
+	d := &coderOpenAIWSClientDialer{
+		proxyClients: make(map[string]*openAIWSProxyClientEntry),
+	}
+	if cfg != nil {
+		d.upstreamRoutes, d.upstreamRoutesErr = upstreamroute.New(cfg.Gateway.UpstreamRouting)
+	}
+	return d
+}
+
+type coderOpenAIWSClientDialer struct {
+	upstreamRoutes    *upstreamroute.Router
+	upstreamRoutesErr error
+	proxyMu           sync.Mutex
+	proxyClients      map[string]*openAIWSProxyClientEntry
+	proxyHits         atomic.Int64
+	proxyMisses       atomic.Int64
+}
+
+// openAIWSHandshakeError keeps a bounded, non-logged HTTP error body so the
+// Agent Identity recovery path can distinguish an invalid task from other
+// 401 handshake failures.
+type openAIWSHandshakeError struct {
+	Body []byte
+	Err  error
+}
+
+func (e *openAIWSHandshakeError) Error() string {
+	if e == nil || e.Err == nil {
+		return "openai ws handshake failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *openAIWSHandshakeError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type openAIWSProxyClientEntry struct {
+	client           *http.Client
+	lastUsedUnixNano int64
+}
+
+func (d *coderOpenAIWSClientDialer) Dial(
+	ctx context.Context,
+	wsURL string,
+	headers http.Header,
+	proxyURL string,
+) (openAIWSClientConn, int, http.Header, error) {
+	targetURL := strings.TrimSpace(wsURL)
+	if targetURL == "" {
+		return nil, 0, nil, errors.New("ws url is empty")
+	}
+	region := ""
+	regionalEligible := strings.TrimSpace(proxyURL) == "" && HTTPUpstreamProfileFromContext(ctx) != HTTPUpstreamProfileOpenAIHarvest
+	if regionalEligible {
+		if d.upstreamRoutesErr != nil {
+			return nil, 0, nil, d.upstreamRoutesErr
+		}
+		parsed, err := url.Parse(targetURL)
+		if err != nil {
+			return nil, 0, nil, errors.New("invalid websocket upstream URL")
+		}
+		proxyURL, region = d.upstreamRoutes.MatchForAccount(parsed, upstreamroute.AccountIDFromContext(ctx))
+	}
+
+	binding, _ := ctx.Value(requestTimezoneEgressKey{}).(*requestTimezoneBinding)
+	wrapped := &coderOpenAIWSClientConn{timezoneBinding: binding, timezoneProxy: proxyURL}
+	opts := &coderws.DialOptions{
+		HTTPHeader:      cloneHeader(headers),
+		CompressionMode: coderws.CompressionContextTakeover,
+		OnPingReceived: func(context.Context, []byte) bool {
+			wrapped.upstreamPings.Add(1)
+			return true
+		},
+	}
+	if binding.enabled(ctx) {
+		wrapped.requestTimezone = binding.service.egressRequestTimezone(ctx, proxyURL)
+		if wrapped.requestTimezone != "" {
+			rewriteRequestTimezoneHeaders(opts.HTTPHeader, wrapped.requestTimezone)
+		}
+	}
+	if proxy := strings.TrimSpace(proxyURL); proxy != "" {
+		proxyClient, err := d.proxyHTTPClient(proxy)
+		if err != nil {
+			if region != "" {
+				err = upstreamroute.TransportError(err)
+			}
+			return nil, 0, nil, err
+		}
+		opts.HTTPClient = proxyClient
+	}
+	if regionalEligible && d.upstreamRoutes != nil {
+		base := opts.HTTPClient
+		if base == nil {
+			base = http.DefaultClient
+		}
+		clone := *base
+		clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			// Also guard a direct first hop redirecting into a regional rule:
+			// it must not silently use the original direct transport.
+			_, nextRegion := d.upstreamRoutes.MatchForAccount(req.URL, upstreamroute.AccountIDFromContext(ctx))
+			if region != "" || nextRegion != "" {
+				return http.ErrUseLastResponse
+			}
+			if base.CheckRedirect != nil {
+				return base.CheckRedirect(req, via)
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		}
+		opts.HTTPClient = &clone
+	}
+
+	conn, resp, err := coderws.Dial(ctx, targetURL, opts)
+	if region != "" {
+		parsed, _ := url.Parse(targetURL)
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		logger.FromContext(ctx).Info("upstream.region_route", zap.String("transport", "websocket"), zap.Int64("account_id", upstreamroute.AccountIDFromContext(ctx)), zap.String("upstream_host", parsed.Hostname()), zap.String("region", region), zap.Int("status_code", status), zap.Bool("transport_error", err != nil))
+	}
+	if err != nil {
+		status := 0
+		respHeaders := http.Header(nil)
+		if resp != nil {
+			status = resp.StatusCode
+			respHeaders = cloneHeader(resp.Header)
+		}
+		var body []byte
+		if resp != nil && resp.Body != nil {
+			body, _ = io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+			_ = resp.Body.Close()
+		}
+		if region != "" {
+			err = upstreamroute.TransportError(err)
+		}
+		return nil, status, respHeaders, &openAIWSHandshakeError{Body: body, Err: err}
+	}
+	// coder/websocket 默认单消息读取上限为 32KB，Codex WS 事件（如 rate_limits/大 delta）
+	// 可能超过该阈值，需显式提高上限，避免本地 read_fail(message too big)。
+	conn.SetReadLimit(openAIWSMessageReadLimitBytes)
+	respHeaders := http.Header(nil)
+	if resp != nil {
+		respHeaders = cloneHeader(resp.Header)
+	}
+	wrapped.conn = conn
+	return wrapped, 0, respHeaders, nil
+}
+
+func (d *coderOpenAIWSClientDialer) proxyHTTPClient(proxy string) (*http.Client, error) {
+	if d == nil {
+		return nil, errors.New("openai ws dialer is nil")
+	}
+	normalizedProxy := strings.TrimSpace(proxy)
+	if normalizedProxy == "" {
+		return nil, errors.New("proxy url is empty")
+	}
+	normalizedProxy, parsedProxyURL, err := proxyurl.Parse(normalizedProxy)
+	if err != nil {
+		return nil, errors.New("invalid websocket proxy URL")
+	}
+	now := time.Now().UnixNano()
+
+	d.proxyMu.Lock()
+	defer d.proxyMu.Unlock()
+	if entry, ok := d.proxyClients[normalizedProxy]; ok && entry != nil && entry.client != nil {
+		entry.lastUsedUnixNano = now
+		d.proxyHits.Add(1)
+		return entry.client, nil
+	}
+	d.cleanupProxyClientsLocked(now)
+	transport := &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:        openAIWSProxyTransportMaxIdleConns,
+		MaxIdleConnsPerHost: openAIWSProxyTransportMaxIdleConnsPerHost,
+		IdleConnTimeout:     openAIWSProxyTransportIdleConnTimeout,
+		TLSHandshakeTimeout: 10 * time.Second,
+		ForceAttemptHTTP2:   true,
+	}
+	if err := proxyutil.ConfigureTransportProxy(transport, parsedProxyURL); err != nil {
+		return nil, errors.New("invalid websocket proxy transport")
+	}
+	client := &http.Client{Transport: transport}
+	d.proxyClients[normalizedProxy] = &openAIWSProxyClientEntry{
+		client:           client,
+		lastUsedUnixNano: now,
+	}
+	d.ensureProxyClientCapacityLocked()
+	d.proxyMisses.Add(1)
+	return client, nil
+}
+
+func (d *coderOpenAIWSClientDialer) cleanupProxyClientsLocked(nowUnixNano int64) {
+	if d == nil || len(d.proxyClients) == 0 {
+		return
+	}
+	idleTTL := openAIWSProxyClientCacheIdleTTL
+	if idleTTL <= 0 {
+		return
+	}
+	now := time.Unix(0, nowUnixNano)
+	for key, entry := range d.proxyClients {
+		if entry == nil || entry.client == nil {
+			delete(d.proxyClients, key)
+			continue
+		}
+		lastUsed := time.Unix(0, entry.lastUsedUnixNano)
+		if now.Sub(lastUsed) > idleTTL {
+			closeOpenAIWSProxyClient(entry.client)
+			delete(d.proxyClients, key)
+		}
+	}
+}
+
+func (d *coderOpenAIWSClientDialer) ensureProxyClientCapacityLocked() {
+	if d == nil {
+		return
+	}
+	maxEntries := openAIWSProxyClientCacheMaxEntries
+	if maxEntries <= 0 {
+		return
+	}
+	for len(d.proxyClients) > maxEntries {
+		var oldestKey string
+		var oldestLastUsed int64
+		hasOldest := false
+		for key, entry := range d.proxyClients {
+			lastUsed := int64(0)
+			if entry != nil {
+				lastUsed = entry.lastUsedUnixNano
+			}
+			if !hasOldest || lastUsed < oldestLastUsed {
+				hasOldest = true
+				oldestKey = key
+				oldestLastUsed = lastUsed
+			}
+		}
+		if !hasOldest {
+			return
+		}
+		if entry := d.proxyClients[oldestKey]; entry != nil {
+			closeOpenAIWSProxyClient(entry.client)
+		}
+		delete(d.proxyClients, oldestKey)
+	}
+}
+
+func closeOpenAIWSProxyClient(client *http.Client) {
+	if client == nil || client.Transport == nil {
+		return
+	}
+	if transport, ok := client.Transport.(*http.Transport); ok && transport != nil {
+		transport.CloseIdleConnections()
+	}
+}
+
+func (d *coderOpenAIWSClientDialer) SnapshotTransportMetrics() OpenAIWSTransportMetricsSnapshot {
+	if d == nil {
+		return OpenAIWSTransportMetricsSnapshot{}
+	}
+	hits := d.proxyHits.Load()
+	misses := d.proxyMisses.Load()
+	total := hits + misses
+	reuseRatio := 0.0
+	if total > 0 {
+		reuseRatio = float64(hits) / float64(total)
+	}
+	return OpenAIWSTransportMetricsSnapshot{
+		ProxyClientCacheHits:   hits,
+		ProxyClientCacheMisses: misses,
+		TransportReuseRatio:    reuseRatio,
+	}
+}
+
+type coderOpenAIWSClientConn struct {
+	timezoneBinding *requestTimezoneBinding
+	timezoneProxy   string
+	requestTimezone string
+	timezoneMu      sync.Mutex
+	conn            *coderws.Conn
+	upstreamPings   atomic.Int64
+}
+
+func (c *coderOpenAIWSClientConn) UpstreamPingCount() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.upstreamPings.Load()
+}
+
+var _ openaiwsv2.FrameConn = (*coderOpenAIWSClientConn)(nil)
+
+func (c *coderOpenAIWSClientConn) WriteJSON(ctx context.Context, value any) error {
+	if c == nil || c.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if payload, ok := value.(openAIWSPreparedJSON); ok {
+		return c.WriteFrame(ctx, coderws.MessageText, payload)
+	}
+	if c.timezoneBinding != nil {
+		payload, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		return c.WriteFrame(ctx, coderws.MessageText, payload)
+	}
+	return wsjson.Write(ctx, c.conn, value)
+}
+
+func (c *coderOpenAIWSClientConn) ReadMessage(ctx context.Context) ([]byte, error) {
+	if c == nil || c.conn == nil {
+		return nil, errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	msgType, payload, err := c.conn.Read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	switch msgType {
+	case coderws.MessageText, coderws.MessageBinary:
+		return payload, nil
+	default:
+		return nil, errOpenAIWSConnClosed
+	}
+}
+
+func (c *coderOpenAIWSClientConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	if c == nil || c.conn == nil {
+		return coderws.MessageText, nil, errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	msgType, payload, err := c.conn.Read(ctx)
+	if err != nil {
+		return coderws.MessageText, nil, err
+	}
+	return msgType, payload, nil
+}
+
+func (c *coderOpenAIWSClientConn) WriteFrame(ctx context.Context, msgType coderws.MessageType, payload []byte) error {
+	if c == nil || c.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if msgType == coderws.MessageText && c.timezoneBinding.enabled(ctx) {
+		c.timezoneMu.Lock()
+		if c.requestTimezone == "" {
+			c.requestTimezone = c.timezoneBinding.service.egressRequestTimezone(ctx, c.timezoneProxy)
+		}
+		name := c.requestTimezone
+		c.timezoneMu.Unlock()
+		if name != "" {
+			payload = normalizeOpenAIRequestLocaleTimezone(ctx, c.timezoneBinding.account, payload, "ws", name)
+		}
+	}
+	return c.conn.Write(ctx, msgType, payload)
+}
+
+func (c *coderOpenAIWSClientConn) Ping(ctx context.Context) error {
+	if c == nil || c.conn == nil {
+		return errOpenAIWSConnClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.conn.Ping(ctx)
+}
+
+// SupportsIdlePingWithoutReader reports the actual coder/websocket contract.
+// Conn.Ping waits for a pong, while control frames are only consumed by Read.
+// Without a reader, using Ping as a health probe would deterministically time
+// out a healthy socket; the pool compensates with a resident reader loop.
+func (*coderOpenAIWSClientConn) SupportsIdlePingWithoutReader() bool {
+	return false
+}
+
+// RequiresReaderLoop 让池为 coder/websocket 连接常驻读循环，空闲期也能应答 ping。
+func (*coderOpenAIWSClientConn) RequiresReaderLoop() bool {
+	return true
+}
+
+func (c *coderOpenAIWSClientConn) Close() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	// Close 为幂等，忽略重复关闭错误。
+	_ = c.conn.Close(coderws.StatusNormalClosure, "")
+	_ = c.conn.CloseNow()
+	return nil
+}
+
+func (c *coderOpenAIWSClientConn) CloseNow() error {
+	if c == nil || c.conn == nil {
+		return nil
+	}
+	_ = c.conn.CloseNow()
+	return nil
+}

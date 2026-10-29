@@ -1,0 +1,220 @@
+# 本地杂项文档、测试数据和外部项目副本
+/docs-local/
+.codex
+
+# ===================
+# Go 后端
+# ===================
+# 二进制文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+backend/bin/
+backend/server
+backend/sub2api
+backend/main
+
+# Go 测试二进制
+*.test
+
+# 测试覆盖率
+*.out
+coverage.html
+
+# 依赖（使用 go mod）
+vendor/
+
+# Go 编译缓存
+backend/.gocache/
+
+# ===================
+# Node.js / Vue 前端
+# ===================
+node_modules/
+frontend/node_modules/
+.pnpm-store/
+frontend/dist/
+*.local
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js.timestamp-*
+
+# 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===================
+# 环境配置
+# ===================
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+docker-compose.override.yml
+
+# ===================
+# IDE / 编辑器
+# ===================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+.classpath
+
+# ===================
+# 操作系统
+# ===================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===================
+# 临时文件
+# ===================
+tmp/
+temp/
+*.tmp
+*.temp
+*.log
+*.bak
+.cache/
+.dev/
+.serena/
+
+# ===================
+# 构建产物
+# ===================
+dist/
+build/
+release/
+
+# 后端嵌入的前端构建产物
+# Keep a placeholder file so `//go:embed all:dist` always has a match in CI/lint,
+# while still ignoring generated frontend build outputs.
+backend/internal/web/dist/
+!backend/internal/web/dist/
+backend/internal/web/dist/*
+!backend/internal/web/dist/.keep
+
+# 后端运行时缓存数据
+backend/data/
+
+# ===================
+# 本地配置文件（包含敏感信息）
+# ===================
+backend/config.yaml
+deploy/config.yaml
+backend/.installed
+
+# ===================
+# 其他
+# ===================
+tests
+!deploy/tests/
+!deploy/tests/**
+CLAUDE.md
+.claude
+scripts
+!backend/scripts/
+!backend/scripts/resolve-version.sh
+.code-review-state
+#openspec/
+code-reviews/
+AGENTS.md
+backend/cmd/server/server
+deploy/docker-compose.override.yml
+.gocache/
+vite.config.js
+user-traffic-pending/
+docs/*
+!docs/user-traffic.md
+!docs/typesafe-content-audit.md
+!docs/multi-host-session-owner.md
+!docs/security-penalties.md
+!docs/ip-risk-control.md
+!docs/docker-trusted-proxies.md
+!docs/anonymous-api-guard.md
+!docs/registration-email-alias-block.md
+!docs/openai-ws-sse-acceleration.md
+!docs/openai-outbound-identity.md
+!docs/openai-2fa-dual-oauth.md
+!docs/openai-siwc.md
+!docs/PAYMENT.md
+!docs/PAYMENT_CN.md
+!docs/ADMIN_PAYMENT_INTEGRATION_API.md
+!docs/ASYNC_IMAGE_TASKS.md
+!docs/PRISM_BRIDGE_RESEARCH_CN.md
+!docs/BATCH_IMAGE_MVP.md
+!docs/COMPOSITE_GROUPS.md
+!docs/PLUGIN_DEVELOPMENT.md
+!docs/channel-monitor-v2-safe-defaults.md
+!docs/quality-bps-observation.md
+!docs/modeltrace-tests.md
+!docs/cyber-session-blocking.md
+!docs/request-capture.md
+!docs/gateway-transport-diagnostics.md
+!docs/chat-responses-bridge-recovery.md
+!docs/codex-credits.md
+!docs/account-token-guard.md
+!docs/priority-scheduling.md
+!docs/astra-account-scheduling.md
+!docs/legal/
+!docs/legal/*.md
+.serena/
+.codex/
+frontend/coverage/
+aicodex
+output/
+.codegraph/
+issues/
+
+# Vitest / Vite cache at repo root
+.vite/
+# 本地闭源插件开发目录及构建产物不进入 Sub2API 仓库
+/plugins/
+
+!docs/codex-ticket-pinning.md
+
+!docs/account-auto-config.md
+
+# Runtime credential encryption keys must never enter source control.
+**/credential-operations.key
+**/.credential-key-*
+!docs/credential-encryption.md
+!docs/new-api-upstream-probe.md
+!docs/minimax-h3-video-relay.md
+!docs/account-ops-notifications.md
+
+!docs/typesafe-jev.md
+
+# Upstream regional egress guide
+!/docs/upstream-regional-routing.md
+
+!docs/harvest-gateway-borrow.md
+
+!docs/openai-2fa-rotation.md
+**/totp-recovery/
+**/*.sealed
+
+!docs/astra-candy-beta.md
+
+# PR screenshots belong in PR attachments; retain text evidence in docs/screenshots.
+!docs/screenshots/
+/docs/screenshots/**/*.png
+/docs/screenshots/**/*.jpg
+/docs/screenshots/**/*.jpeg
+/docs/screenshots/**/*.gif
+/docs/screenshots/**/*.webp
+/docs/screenshots/**/*.avif
+/docs/screenshots/**/*.svg
+
+# Local macOS re-auth Worker runtime (ephemeral, never commit)
+tools/local-worker/

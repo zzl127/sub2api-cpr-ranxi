@@ -1,0 +1,20 @@
+{
+  "source_commit": "2d55b424e3cac42814e81c9fec700595985faafb",
+  "components": [
+    "frontend/src/components/keys/UseKeyModal.vue",
+    "frontend/src/components/common/PlatformTypeBadge.vue"
+  ],
+  "mode": "Actual Vue components with mocked catalog; not full page navigation or production acceptance",
+  "fixtures": "Fictional catalog.example.com URL, demonstration API key, subscription labels and model metadata",
+  "screenshots": [
+    "catalog-before.png",
+    "plans-before.png"
+  ],
+  "browser_errors": [],
+  "captured_at": "2026-10-01T16:11:00.495Z",
+  "screenshot_archive": {
+    "commit": "297e9201a2f6d6fe70073b370a5b71f49579accf",
+    "base_url": "https://github.com/ranxi2001/sub2api/tree/297e9201a2f6d6fe70073b370a5b71f49579accf/docs/screenshots/codex-0211/before/",
+    "note": "Screenshot binaries were removed from the current source tree; filenames refer to this historical commit."
+  }
+}
