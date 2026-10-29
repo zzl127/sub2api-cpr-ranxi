@@ -91,7 +91,10 @@ func cprWindow(window *OpenAIRateLimitWindow, observed time.Time) *UsageProgress
 
 func (s *AccountUsageService) getCPRUsage(ctx context.Context, a *Account, force bool) (*UsageInfo, error) {
 	lock, _ := s.cprSnapshotLocks.LoadOrStore(a.ID, &sync.Mutex{})
-	mu := lock.(*sync.Mutex)
+	mu, ok := lock.(*sync.Mutex)
+	if !ok || mu == nil {
+		return nil, errors.New("CPR quota snapshot lock unavailable")
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if s.cprQuotaService == nil {

@@ -64,6 +64,27 @@ func TestCPRFusionDoesNotBecomeOAuth(t *testing.T) {
 	require.Error(t, ValidateCPRCredentials(a.Platform, a.Type, a.Credentials))
 }
 
+func TestCPRFusionTransportCloneRejectsInvalidDefaults(t *testing.T) {
+	_, err := cloneCPRHTTPTransport(nil)
+	require.ErrorIs(t, err, ErrCPRNotConfigured)
+	var typedNil *http.Transport
+	_, err = cloneCPRHTTPTransport(typedNil)
+	require.ErrorIs(t, err, ErrCPRNotConfigured)
+	base := &http.Transport{}
+	transport, err := cloneCPRHTTPTransport(base)
+	require.NoError(t, err)
+	transport.DisableCompression = true
+	require.False(t, base.DisableCompression)
+}
+
+func TestCPRFusionInvalidSnapshotLockReturnsError(t *testing.T) {
+	s := &AccountUsageService{}
+	a := fusionCPRAccount()
+	s.cprSnapshotLocks.Store(a.ID, "invalid")
+	_, err := s.getCPRUsage(context.Background(), a, false)
+	require.ErrorContains(t, err, "snapshot lock unavailable")
+}
+
 func TestCPRFusionAdminRootDoesNotInheritInferenceVersion(t *testing.T) {
 	a := fusionCPRAccount()
 	a.Credentials["base_url"] = "https://cpr.example.invalid/proxy/v1/"

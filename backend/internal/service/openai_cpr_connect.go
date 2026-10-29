@@ -69,6 +69,9 @@ type cprConnectKey struct {
 // adminJSON never includes upstream messages or transport errors in its errors:
 // a peer can reflect a key, URL credentials, or response secrets.
 func (s *CPRQuotaService) adminJSON(ctx context.Context, base, key, method, path string, query url.Values, input, output any) error {
+	if s == nil || s.client == nil {
+		return ErrCPRNotConfigured
+	}
 	base, err := validateCPROutboundURL(s.cfg, base)
 	if err != nil || strings.TrimSpace(key) == "" {
 		return ErrCPRNotConfigured
@@ -217,7 +220,7 @@ func (s *CPRQuotaService) connectKeys(ctx context.Context, base, key string) ([]
 // EnsureClientKey only reuses a single-account group and a key scoped solely to
 // that group. It never widens existing keys, removes groups, or changes policies.
 func (s *CPRQuotaService) EnsureClientKey(ctx context.Context, account *Account) (string, error) {
-	if account == nil || !account.IsCPR() || account.Platform != PlatformOpenAI || account.GetCPRAccountID() == "" {
+	if s == nil || s.client == nil || account == nil || !account.IsCPR() || account.Platform != PlatformOpenAI || account.GetCPRAccountID() == "" {
 		return "", ErrCPRNotConfigured
 	}
 	if _, err := validateCPROutboundURL(s.cfg, account.GetCPRGatewayBaseURL()); err != nil {

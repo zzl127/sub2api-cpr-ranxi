@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -32,6 +33,14 @@ const (
 // IsCPR 报告账号是否为 CPR 中继类型。
 func (a *Account) IsCPR() bool {
 	return a != nil && a.Type == AccountTypeCPR && a.Platform == PlatformOpenAI
+}
+
+func cloneCPRHTTPTransport(base http.RoundTripper) (*http.Transport, error) {
+	transport, ok := base.(*http.Transport)
+	if !ok || transport == nil {
+		return nil, ErrCPRNotConfigured
+	}
+	return transport.Clone(), nil
 }
 
 func validateCPROutboundURL(cfg *config.Config, raw string) (string, error) {

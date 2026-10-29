@@ -33,7 +33,10 @@ func (s *OpenAIGatewayService) cprRelayOptions(ctx context.Context, a *Account) 
 	if token == "" {
 		return rawproxy.Options{}, func() {}, ErrCPRNotConfigured
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport, err := cloneCPRHTTPTransport(http.DefaultTransport)
+	if err != nil {
+		return rawproxy.Options{}, func() {}, err
+	}
 	transport.DisableCompression, transport.Proxy = true, nil
 	if a.Proxy != nil {
 		proxy, err := url.Parse(a.Proxy.URL())

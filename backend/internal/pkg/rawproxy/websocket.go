@@ -66,7 +66,7 @@ func WebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request, opt 
 	})
 	if err != nil {
 		if failed != nil {
-			defer failed.Body.Close()
+			defer func() { _ = failed.Body.Close() }()
 			CopyResponseHeaders(w.Header(), failed.Header)
 			w.WriteHeader(failed.StatusCode)
 			_, copyErr := io.Copy(&flushWriter{writer: w}, failed.Body)
@@ -74,7 +74,7 @@ func WebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request, opt 
 		}
 		return err
 	}
-	defer upstream.CloseNow()
+	defer func() { _ = upstream.CloseNow() }()
 	accepted := []string(nil)
 	if p := upstream.Subprotocol(); p != "" {
 		accepted = []string{p}
@@ -85,7 +85,7 @@ func WebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request, opt 
 	if err != nil {
 		return err
 	}
-	defer downstream.CloseNow()
+	defer func() { _ = downstream.CloseNow() }()
 	upstream.SetReadLimit(32 << 20)
 	downstream.SetReadLimit(32 << 20)
 	relayCtx, cancel := context.WithCancel(ctx)

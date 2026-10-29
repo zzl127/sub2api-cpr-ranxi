@@ -89,7 +89,10 @@ type CPRQuotaService struct {
 }
 
 func NewCPRQuotaService(cfg *config.Config) *CPRQuotaService {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport, err := cloneCPRHTTPTransport(http.DefaultTransport)
+	if err != nil {
+		return nil
+	}
 	transport.Proxy = nil
 	transport.ResponseHeaderTimeout = cprAdminRequestTimeout
 	return &CPRQuotaService{
