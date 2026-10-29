@@ -1540,7 +1540,7 @@ func (a *Account) IsAPIKeyOrBedrock() bool {
 // 在 apikey/bedrock 之外额外放开 Vertex service_account；池模式等其它特性仍只看 IsAPIKeyOrBedrock。
 func AccountTypeSupportsQuota(accountType string) bool {
 	switch strings.ToLower(accountType) {
-	case AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount:
+	case AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount, AccountTypeCPR:
 		return true
 	}
 	return false
@@ -1612,6 +1612,12 @@ func (a *Account) IsOpenAIApiKey() bool {
 // 适用 openai、国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）与 OpenCode Go；
 // grok 走 GetGrokBaseURL，此处对 grok 返回 "" 以保持原有行为。
 func (a *Account) GetOpenAIBaseURL() string {
+	if a != nil && a.Type == AccountTypeCPR {
+		if !a.IsCPR() {
+			return ""
+		}
+		return a.GetCPRGatewayBaseURL()
+	}
 	if !a.IsOpenAI() && !a.IsMultiProtocolAPIKey() {
 		return ""
 	}
@@ -1953,6 +1959,9 @@ func (a *Account) GetOpenAIProtocolAPIKey() string {
 	if a == nil {
 		return ""
 	}
+	if a.IsCPR() {
+		return a.GetCPRClientKey()
+	}
 	if a.IsMultiProtocolAPIKey() {
 		if a.Type != AccountTypeAPIKey {
 			return ""
@@ -2085,7 +2094,7 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		// chatgpt.com/backend-api/codex/alpha/search，API key 走
 		// {base_url}/v1/alpha/search（见 openAIAlphaSearchURL），两类账号
 		// 都可承接独立搜索请求。上游不支持该端点时由转发层 failover 兜底。
-		if a.Type != AccountTypeOAuth && a.Type != AccountTypeAPIKey {
+		if a.Type != AccountTypeOAuth && a.Type != AccountTypeAPIKey && !a.IsCPR() {
 			return false
 		}
 	case OpenAIEndpointCapabilityEmbeddings:
@@ -2221,6 +2230,10 @@ func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {
 }
 
 func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapability) bool {
+	if a.IsCPR() {
+		return capability == "" || capability == OpenAIImagesCapabilityAPIKey ||
+			capability == OpenAIImagesCapabilityBasic || capability == OpenAIImagesCapabilityNative
+	}
 	if capability == "" {
 		return true
 	}
@@ -2484,6 +2497,9 @@ func (a *Account) IsCopilotSDKEnabled() bool {
 // 1. 按账号类型读取分类型字段
 // 2. 分类型字段缺失时，回退兼容字段
 func (a *Account) IsOpenAIResponsesWebSocketV2Enabled() bool {
+	if a.IsCPR() {
+		return true
+	}
 	if a.IsSIWCEnabled() {
 		return false
 	}
@@ -2558,6 +2574,9 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 // 3. 兼容 enabled 旧字段（bool）
 // 4. defaultMode（非法时回退 ctx_pool）
 func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
+	if a.IsCPR() {
+		return OpenAIWSIngressModePassthrough
+	}
 	if a.IsSIWCEnabled() {
 		return OpenAIWSIngressModeOff
 	}

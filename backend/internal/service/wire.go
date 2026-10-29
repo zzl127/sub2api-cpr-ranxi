@@ -288,6 +288,7 @@ func ProvideAccountUsageService(
 		tlsFPProfileService,
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.ConfigureCPR(openAIGatewayService)
 	return service
 }
 

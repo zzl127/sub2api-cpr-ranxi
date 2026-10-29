@@ -631,6 +631,18 @@ func (s *OpenAIGatewayService) ForwardImages(
 		return nil, admissionErr
 	}
 	account = latest
+	if account.IsCPR() {
+		result, err := s.forwardCPR(ctx, c, account, body)
+		if result != nil && result.Model == "" {
+			result.Model = parsed.Model
+		}
+		if result != nil {
+			result.Stream = parsed.Stream
+			result.ImageSize, result.ImageInputSize = parsed.SizeTier, parsed.Size
+			result.BillingModel = parsed.Model
+		}
+		return result, err
+	}
 	if err := parsed.ValidateAccountModels(account, channelMappedModel); err != nil {
 		return nil, err
 	}

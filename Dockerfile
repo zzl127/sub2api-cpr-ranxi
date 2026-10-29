@@ -108,9 +108,9 @@ FROM ${POSTGRES_IMAGE} AS pg-client
 FROM ${ALPINE_IMAGE}
 
 # Labels
-LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
-LABEL description="Sub2API - AI API Gateway Platform"
-LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
+LABEL maintainer="zzl127"
+LABEL description="Sub2API CPR Fusion - Ranxi v2.17.6 derivative"
+LABEL org.opencontainers.image.source="https://github.com/zzl127/sub2api-cpr-ranxi"
 
 # Install runtime dependencies
 RUN apk add --no-cache \

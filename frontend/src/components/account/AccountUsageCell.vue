@@ -1,9 +1,10 @@
 <template>
-  <div ref="rootRef" v-if="showUsageWindows">
+  <div ref="rootRef" v-if="showUsageWindows || account.type === 'cpr'">
     <ExcelBPSCredentialStatus :state="account.excel_bps_credential_state" />
+    <CPRUsageCell v-if="account.type === 'cpr'" :account-id="account.id" />
     <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
     <template
-      v-if="
+      v-else-if="
         account.platform === 'anthropic' &&
         (account.type === 'oauth' || account.type === 'setup-token')
       "
@@ -698,6 +699,7 @@
 </template>
 
 <script setup lang="ts">
+import CPRUsageCell from './CPRUsageCell.vue'
 import ExcelBPSCredentialStatus from './ExcelBPSCredentialStatus.vue'
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'

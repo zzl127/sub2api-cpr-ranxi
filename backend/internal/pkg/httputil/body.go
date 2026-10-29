@@ -104,9 +104,11 @@ func readRequestBodyWithPrealloc(req *http.Request, maxDecodedBytes int64, stric
 	if err != nil {
 		return nil, err
 	}
+	observeWireRequest(req, raw, nil)
 
 	enc := strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding")))
 	if enc == "" || enc == "identity" {
+		observeWireRequest(req, raw, raw)
 		return raw, nil
 	}
 
@@ -118,6 +120,7 @@ func readRequestBodyWithPrealloc(req *http.Request, maxDecodedBytes int64, stric
 	req.Header.Del("Content-Encoding")
 	req.Header.Del("Content-Length")
 	req.ContentLength = int64(len(decoded))
+	observeWireRequest(req, raw, decoded)
 
 	return decoded, nil
 }

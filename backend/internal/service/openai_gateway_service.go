@@ -1327,6 +1327,15 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 		return token, "siwc", err
 	}
 	switch account.Type {
+	case AccountTypeCPR:
+		if !account.IsCPR() || account.GetCPRGatewayBaseURL() == "" {
+			return "", "", errors.New("invalid CPR account configuration")
+		}
+		key := account.GetCPRClientKey()
+		if key == "" {
+			return "", "", errors.New("CPR client key is not configured")
+		}
+		return key, "apikey", nil
 	case AccountTypeOAuth:
 		if account.IsOpenAIAgentIdentity() {
 			return "", OpenAIAuthModeAgentIdentity, nil

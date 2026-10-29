@@ -607,6 +607,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		return admissionErr
 	}
 	account = latest
+	if account.IsCPR() {
+		return s.proxyCPRWebSocket(ctx, c, clientConn, account, firstClientMessage, hooks)
+	}
 	if account.IsSIWCEnabled() {
 		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "SIWC accounts require HTTP/SSE", nil)
 	}

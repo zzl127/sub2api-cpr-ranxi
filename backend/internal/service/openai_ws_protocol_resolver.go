@@ -56,6 +56,12 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 	if !wsCfg.Enabled {
 		return openAIWSHTTPDecision("global_disabled")
 	}
+	if account.IsCPR() {
+		if !wsCfg.APIKeyEnabled {
+			return openAIWSHTTPDecision("apikey_disabled")
+		}
+		return OpenAIWSProtocolDecision{Transport: OpenAIUpstreamTransportResponsesWebsocketV2, Reason: "cpr_relay"}
+	}
 	if account.IsOpenAIOAuthLike() {
 		if !wsCfg.OAuthEnabled {
 			return openAIWSHTTPDecision("oauth_disabled")

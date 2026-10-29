@@ -71,6 +71,7 @@ type RelayExit struct {
 }
 
 type RelayOptions struct {
+	BareErrorEndsTurn               bool
 	WriteTimeout                    time.Duration
 	IdleTimeout                     time.Duration
 	UpstreamDrainTimeout            time.Duration
@@ -116,6 +117,7 @@ type relayState struct {
 	turnTimingByID          map[string]*relayTurnTiming
 	activeTurn              *relayTurnTiming
 	pendingBareError        *observedUpstreamEvent
+	bareErrorEndsTurn       bool
 }
 
 type relayExitSignal struct {
@@ -181,7 +183,7 @@ func Relay(
 		firstMessageType = coderws.MessageText
 	}
 	startAt := nowFn()
-	state := &relayState{requestModel: result.RequestModel}
+	state := &relayState{requestModel: result.RequestModel, bareErrorEndsTurn: options.BareErrorEndsTurn}
 	state.turnWroteDownstream.Store(&atomic.Bool{})
 	if isClientResponseCreateFrame(firstMessageType, firstClientMessage) {
 		firstTurnStartedAt := options.FirstTurnStartedAt
@@ -827,9 +829,11 @@ func observeUpstreamMessage(
 		if observed.responseID == "" {
 			observed.responseID = openAIWSRelayActiveTurnID(state)
 		}
-		pending := observed
-		state.pendingBareError = &pending
-		return observed
+		if !state.bareErrorEndsTurn {
+			pending := observed
+			state.pendingBareError = &pending
+			return observed
+		}
 	}
 	state.pendingBareError = nil
 	return finalizeObservedRelayTerminal(state, observed, now)

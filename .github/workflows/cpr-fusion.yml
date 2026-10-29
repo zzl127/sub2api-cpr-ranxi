@@ -1,0 +1,64 @@
+name: CPR Fusion
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'deploy/traffic/test_cpr_fusion.py'
+      - '.github/workflows/cpr-fusion.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'deploy/traffic/test_cpr_fusion.py'
+      - '.github/workflows/cpr-fusion.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GOMAXPROCS: '2'
+      GOGC: '50'
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Frontend tests and embedded assets
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec vitest run src/components/account/__tests__/CPRAccountModal.spec.ts
+          pnpm run build
+      - name: Relay and CPR regression tests
+        working-directory: backend
+        run: |
+          go test -tags=unit -p 1 ./internal/pkg/rawproxy ./internal/pkg/httputil ./internal/service/openai_ws_v2
+          go test -tags=unit -p 1 ./internal/service -run TestCPR
+      - name: Build application and guarded fixture
+        working-directory: backend
+        run: |
+          go build -tags=embed -p 1 -o ../.fixture-bin/sub2api ./cmd/server
+          go build -tags=fullappfixture -p 1 -o ../.fixture-bin/fullapp-fixture ./cmd/fullapp-fixture
+      - name: Real application with synthetic upstream only
+        env:
+          FULLAPP_BIN: ${{ github.workspace }}/.fixture-bin/sub2api
+          FULLAPP_FIXTURE_BIN: ${{ github.workspace }}/.fixture-bin/fullapp-fixture
+        run: python3 deploy/traffic/test_cpr_fusion.py

@@ -18,6 +18,7 @@
             @create="showCreate = true"
           >
             <template #after>
+              <button class="btn btn-secondary" @click="edAcc = null; showCPR = true">+ CPR</button>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -463,6 +464,7 @@
     </TablePageLayout>
     <NewAPIUpstreamConfigDialog v-if="authStore.isAdmin" :show="newAPIConfigAccount !== null" :account="newAPIConfigAccount" @close="newAPIConfigAccount = null" @saved="reload" />
     <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
+    <CPRAccountModal :show="showCPR" :account="edAcc" :proxies="proxies" :groups="groups" @close="showCPR = false" @saved="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" @tested="reload" />
@@ -520,6 +522,7 @@ import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrsModal, TempUnschedStatusModal } from '@/components/account'
+import CPRAccountModal from '@/components/account/CPRAccountModal.vue'
 import AccountTableActions from '@/components/admin/account/AccountTableActions.vue'
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
@@ -628,6 +631,7 @@ const handleConfigureNewAPIUpstream = (account: Account) => {
   if (authStore.isAdmin && account.type === 'apikey') newAPIConfigAccount.value = account
 }
 const showCreate = ref(false)
+const showCPR = ref(false)
 const showEdit = ref(false)
 const showSync = ref(false)
 const showImportData = ref(false)
@@ -1939,6 +1943,10 @@ const handleEdit = async (a: AccountListItem) => {
   const account = await loadAccountDetails(a)
   if (!account) return
   edAcc.value = account
+  if (account.type === 'cpr') {
+    showCPR.value = true
+    return
+  }
   showEdit.value = true
 }
 const openMenu = (a: Account, e: MouseEvent) => {

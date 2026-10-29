@@ -1,3 +1,15 @@
+# Sub2API CPR Fusion
+
+This derivative is based on **Ranxi v2.17.6** and adds a dedicated CPR account
+channel with opaque payload forwarding. See [CPR integration](docs/CPR_FUSION.md)
+for setup, provenance, scope and verification status.
+
+**Source preview: `2.17.6-cpr.1`.** This is not an official Ranxi or Klno release.
+It has not been deployed over an existing service. Build this checkout to use
+the CPR integration; the inherited installation links below install upstream
+releases, not this derivative. The built-in updater is scoped to
+`zzl127/sub2api-cpr-ranxi` and will not replace it with an upstream binary.
+
 <div align="center">
 
 <img src="assets/logo-icon.png" alt="Sub2API Logo" width="128" />

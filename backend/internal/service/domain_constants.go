@@ -159,6 +159,7 @@ func IsAllowedQuotaPlatform(s string) bool {
 
 // Account type constants
 const (
+	AccountTypeCPR            = domain.AccountTypeCPR
 	AccountTypeOAuth          = domain.AccountTypeOAuth          // OAuth类型账号（full scope: profile + inference）
 	AccountTypeSetupToken     = domain.AccountTypeSetupToken     // Setup Token类型账号（inference only scope）
 	AccountTypeAPIKey         = domain.AccountTypeAPIKey         // API Key类型账号

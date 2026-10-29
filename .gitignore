@@ -132,9 +132,12 @@ AGENTS.md
 backend/cmd/server/server
 deploy/docker-compose.override.yml
 .gocache/
+__pycache__/
+*.py[cod]
 vite.config.js
 user-traffic-pending/
 docs/*
+!docs/CPR_FUSION.md
 !docs/user-traffic.md
 !docs/typesafe-content-audit.md
 !docs/multi-host-session-owner.md
@@ -218,3 +221,6 @@ issues/
 
 # Local macOS re-auth Worker runtime (ephemeral, never commit)
 tools/local-worker/
+
+# Guarded synthetic application fixture binaries.
+.fixture-bin/

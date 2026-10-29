@@ -27,6 +27,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
@@ -61,6 +62,7 @@ type fixtureOutput struct {
 	PeerAccountSlots   int     `json:"peer_account_slots"`
 	APIKeyQueueActive  int     `json:"api_key_queue_active"`
 	APIKeyQueueWaiting int     `json:"api_key_queue_waiting"`
+	WSTurns            int     `json:"ws_turns,omitempty"`
 }
 
 var fixtureStage = "input"
@@ -122,7 +124,16 @@ func run(op string) error {
 	defer cache.Close()
 	var out fixtureOutput
 	switch op {
-	case "seed", "seed-multi":
+	case "probe-cpr-ws":
+		if !strings.HasPrefix(in.APIKey, "sk-fixture-") {
+			return errors.New("synthetic key required")
+		}
+		fixtureStage = "websocket-two-turns"
+		if err := probeCPRWebSocket(ctx, prefix, in.APIKey); err != nil {
+			return err
+		}
+		out.WSTurns = 2
+	case "seed", "seed-multi", "seed-cpr":
 		if in.Origin != "http://"+prefix+"-model:9090" ||
 			!strings.HasPrefix(in.APIKey, "sk-fixture-") {
 			return errors.New("synthetic model/key required")
@@ -155,6 +166,11 @@ func run(op string) error {
 			Credentials: map[string]any{"api_key": "synthetic-upstream-only", "base_url": in.Origin,
 				"model_mapping": map[string]string{"gpt-6.1-sol": "gpt-6.1-sol"}},
 			Extra: map[string]any{"openai_passthrough": true}}
+		if op == "seed-cpr" {
+			account.Type = service.AccountTypeCPR
+			account.Credentials["admin_api_key"] = "synthetic-admin-only"
+			account.Credentials["cpr_account_id"] = "acct_fixture"
+		}
 		fixtureStage = "create-account-group"
 		atomicCreator, ok := accounts.(service.AccountDuplicateRepository)
 		if !ok {
@@ -304,6 +320,10 @@ func serve() error {
 	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
 		primary := r.Header.Get("Authorization") == "Bearer synthetic-upstream-only"
 		peer := r.Header.Get("Authorization") == "Bearer synthetic-upstream-peer"
+		if r.Method == http.MethodGet && primary && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			serveCPRWebSocket(w, r, s)
+			return
+		}
 		// Observed HTTP arrivals, before body parsing/acceptance. These do not
 		// count application attempts that fail DNS/TCP/TLS before reaching us.
 		s.mu.Lock()
@@ -422,4 +442,82 @@ func serve() error {
 	})
 	server := &http.Server{Addr: ":9090", Handler: mux, ReadHeaderTimeout: 2 * time.Second, IdleTimeout: 5 * time.Second}
 	return server.ListenAndServe()
+}
+
+func cprFixtureWSFrames() []string {
+	return []string{
+		` { "type":"response.create","model":"gpt-6.1-sol","store":false,"instructions":"Synthetic fixture only.","input":"one","client_marker":"unmodified" } `,
+		`{"type":"response.create","model":"gpt-6.1-sol","store":false,"previous_response_id":"resp_fixture_ws_1","input":"two","client_marker":"unmodified"}`,
+	}
+}
+
+func serveCPRWebSocket(w http.ResponseWriter, r *http.Request, s *modelState) {
+	conn, err := coderws.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.CloseNow()
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	for turn, expected := range cprFixtureWSFrames() {
+		kind, body, err := conn.Read(ctx)
+		if err != nil || kind != coderws.MessageText || string(body) != expected {
+			return
+		}
+		s.mu.Lock()
+		s.accepted++
+		s.active++
+		s.mu.Unlock()
+		id := fmt.Sprintf("resp_fixture_ws_%d", turn+1)
+		frames := []string{
+			fmt.Sprintf(`{"type":"response.created","response":{"id":%q,"model":"gpt-6.1-sol"}}`, id),
+			fmt.Sprintf(`{"type":"response.output_text.delta","response_id":%q,"delta":"OK"}`, id),
+			fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"model":"gpt-6.1-sol","status":"completed","usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}}`, id),
+		}
+		for _, frame := range frames {
+			if err := conn.Write(ctx, coderws.MessageText, []byte(frame)); err != nil {
+				return
+			}
+		}
+		s.mu.Lock()
+		s.completed++
+		s.active--
+		s.mu.Unlock()
+	}
+	_, _, _ = conn.Read(ctx)
+}
+
+func probeCPRWebSocket(ctx context.Context, prefix, key string) error {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	defer transport.CloseIdleConnections()
+	conn, _, err := coderws.Dial(ctx, "ws://"+prefix+"-app:8080/v1/responses", &coderws.DialOptions{
+		HTTPClient: &http.Client{Transport: transport},
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + key}},
+	})
+	if err != nil {
+		return errors.New("fixture websocket connection failed")
+	}
+	defer conn.CloseNow()
+	for _, frame := range cprFixtureWSFrames() {
+		if err := conn.Write(ctx, coderws.MessageText, []byte(frame)); err != nil {
+			return errors.New("fixture websocket write failed")
+		}
+		for {
+			_, body, err := conn.Read(ctx)
+			if err != nil {
+				return errors.New("fixture websocket read failed")
+			}
+			var event struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(body, &event) != nil || event.Type == "error" || event.Type == "response.failed" {
+				return errors.New("fixture websocket protocol failure")
+			}
+			if event.Type == "response.completed" {
+				break
+			}
+		}
+	}
+	return conn.Close(coderws.StatusNormalClosure, "fixture completed")
 }

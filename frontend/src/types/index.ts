@@ -989,7 +989,7 @@ export type KnownAccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigrav
  * `string & {}` 保留内置平台的字面量补全。
  */
 export type AccountPlatform = KnownAccountPlatform | (string & {})
-export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
+export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account' | 'cpr'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
@@ -1615,6 +1615,7 @@ export interface GrokBillingSummary {
 }
 
 export interface AccountUsageInfo {
+  cpr?: import('./cpr').CPRQuotaSnapshot
   source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null
@@ -1710,6 +1711,7 @@ export interface OpenAIResponsesState {
 }
 
 export interface CreateAccountRequest {
+  cpr_auto_configure?: boolean
   name: string
   notes?: string | null
   platform: AccountPlatform
