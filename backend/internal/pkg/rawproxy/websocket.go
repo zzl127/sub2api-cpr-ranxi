@@ -110,7 +110,7 @@ func WebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request, opt 
 			if event == "response.create" || event == "session.update" {
 				if opt.BeforeTurn != nil {
 					if e = opt.BeforeTurn(payload); e != nil {
-						downstream.Close(websocket.StatusPolicyViolation, "Gateway quota or access limit reached")
+						_ = downstream.Close(websocket.StatusPolicyViolation, "Gateway quota or access limit reached")
 						exits <- e
 						return
 					}
@@ -226,12 +226,12 @@ func WebSocket(ctx context.Context, w http.ResponseWriter, r *http.Request, opt 
 	err = <-exits
 	var closeError websocket.CloseError
 	if errors.As(err, &closeError) {
-		upstream.Close(closeError.Code, closeError.Reason)
-		downstream.Close(closeError.Code, closeError.Reason)
+		_ = upstream.Close(closeError.Code, closeError.Reason)
+		_ = downstream.Close(closeError.Code, closeError.Reason)
 	}
 	cancel()
-	upstream.CloseNow()
-	downstream.CloseNow()
+	_ = upstream.CloseNow()
+	_ = downstream.CloseNow()
 	<-exits // all relay goroutines stop before caller releases concurrency slots
 	return err
 }

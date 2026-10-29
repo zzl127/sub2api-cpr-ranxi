@@ -23,9 +23,8 @@ import (
 // 注释写明"会让下游 Codex 客户端显示账户额度提示，不能穿过账号隔离边界"），
 // 所以中继账号的额度只能从 admin 侧拉。
 //
-// 产出刻意落在 *OpenAIRateLimit 上：下游的 buildCodexWindowExtraUpdates 已经会把
-// primary/secondary 归一化成 codex_5h_* / codex_7d_* extra 键，前端读的就是这些键。
-// 于是展示与 OAuth 账号完全一致，不需要新增任何展示字段。
+// Window conversion is shared with OpenAI types, but observations are stored
+// only in CPRAccountSnapshot, never in OAuth scheduler quota fields.
 
 const (
 	cprAdminAPIKeyHeader   = "x-api-key"
@@ -55,17 +54,6 @@ const (
 	CPRAccountStatusDisabled       = "disabled"
 	CPRAccountStatusError          = "error"
 )
-
-// CPRPlanTypeExtraKey 存 CPR admin 返回的订阅档位（Plus/Pro/Team/Free…）。
-// 放 extra 而不是 credentials：UpdateExtra 是 JSONB key 级合并，不会与管理端
-// 改凭据的整体写入互相覆盖。导出是因为调度快照的 extra 白名单
-// （repository/scheduler_cache.go filterSchedulerExtra）要引用它——不进白名单，
-// Redis 命中路径上的投影账号就看不到档位，订阅优先调度对 cpr 形同虚设。
-const CPRPlanTypeExtraKey = "cpr_plan_type"
-
-// CPROutboundProxyExtraKey 存 CPR 侧的出站代理端点（已脱敏，不含凭据）。纯展示，
-// 不参与调度，因此在 schedulerNeutralExtraKeys 里。
-const CPROutboundProxyExtraKey = "cpr_outbound_proxy"
 
 // CPRAccountState 是一次 admin 查询的归一化结果。
 type CPRAccountState struct {
@@ -394,66 +382,6 @@ func convertCPRWindow(window cprQuotaWindow, now time.Time) *OpenAIRateLimitWind
 		converted.ResetAfterSeconds = remaining
 	}
 	return converted
-}
-
-// buildCPRCodexExtraUpdates 复用 OAuth 那条链的归一化函数，产出同一组 codex_* 键，
-// 因此前端展示与 OAuth 账号完全一致，不需要任何新的展示字段。
-//
-// 没有窗口时返回空 map，调用方据此一个字节都不写：
-//   - mergeAccountExtra 只写不删，推进 codex_usage_updated_at 会把上一次的
-//     codex_5h_* 标成"刚刷新"，显示一个陈旧百分比。
-//   - 若在这里塞入无人消费的状态键，len(updates) 恒不为零，
-//     每一次 /usage 请求都会触发一次 UpdateExtra 写库。
-//
-// 行为与 OAuth 那条路一致（buildCodexPrimaryWindowExtraUpdates 返回 nil 时同样什么
-// 都不写），代价是时效判定继续认为快照缺失、下次还会再拉一次——对本机 admin 调用
-// 可以接受。CPR 账号的状态与错误原因在 CPR 自己后台就能看到，不在这里重复存。
-func buildCPRCodexExtraUpdates(account *Account, state *CPRAccountState) map[string]any {
-	if state == nil {
-		return nil
-	}
-	// Keep remote quota in its read-only snapshot, never in OAuth scheduler windows.
-	updates := make(map[string]any)
-	// 订阅档位：cpr 凭据里没有 plan_type（那是 OAuth 登录态的产物），只能从 CPR
-	// admin 的账号详情拿。开了「订阅优先」的分组靠 IsOpenAIChatGPTSubscription()
-	// 分梯队，没有它 cpr 永远被降到第二梯队，与同一份 ChatGPT 订阅的 oauth 账号
-	// 权重不对等。
-	//
-	// 两个不写的情形：
-	//   - CPR 没返回档位：mergeAccountExtra 只写不删，写空串会把已知档位抹成未知。
-	//   - 档位没变：cpr_plan_type 不在 schedulerNeutralExtraKeys 里（它确实影响
-	//     调度，必须让快照看见），无条件写会让每一次 /usage 刷新都触发一次
-	//     UpdateExtra + 调度快照重建。
-	plan := strings.TrimSpace(state.PlanType)
-	known := ""
-	if account != nil {
-		known = strings.TrimSpace(account.GetExtraString(CPRPlanTypeExtraKey))
-	}
-	if plan != "" && !strings.EqualFold(plan, known) {
-		if updates == nil {
-			updates = make(map[string]any, 1)
-		}
-		updates[CPRPlanTypeExtraKey] = plan
-	}
-	// 出站代理：cpr 账号真正的出口 IP 由 CPR 侧这个字段决定，sub2api 账号上绑的 proxy
-	// 只作用于 sub2api→CPR 那一跳（127.0.0.1），在账号页上看着像出口其实不是。不显示
-	// 出来就没法回答「这个号现在从哪出去」，而那是排 turn-state / 降智问题的第一个问题。
-	//
-	// 与档位同一套写入条件：空值不写（mergeAccountExtra 只写不删，写空串会把已知值抹掉），
-	// 没变不写（否则每次 /usage 刷新都触发一次 UpdateExtra）。该键是纯展示，已放进
-	// schedulerNeutralExtraKeys，写入不牵连调度快照重建。
-	endpoint := strings.TrimSpace(state.OutboundProxyEndpoint)
-	knownEndpoint := ""
-	if account != nil {
-		knownEndpoint = strings.TrimSpace(account.GetExtraString(CPROutboundProxyExtraKey))
-	}
-	if endpoint != "" && endpoint != knownEndpoint {
-		if updates == nil {
-			updates = make(map[string]any, 1)
-		}
-		updates[CPROutboundProxyExtraKey] = endpoint
-	}
-	return updates
 }
 
 // parseCPRDisplayTime 反解 CPR 的 UTC+8 显示时间。解不出返回 nil——

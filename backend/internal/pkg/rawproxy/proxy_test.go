@@ -20,7 +20,11 @@ import (
 
 func options(server *httptest.Server) Options {
 	client := server.Client()
-	transport := client.Transport.(*http.Transport).Clone()
+	original, ok := client.Transport.(*http.Transport)
+	if !ok {
+		panic("httptest client must use http.Transport")
+	}
+	transport := original.Clone()
 	transport.DisableCompression = true
 	client.Transport = transport
 	return Options{BaseURL: server.URL + "/v1", Token: "upstream-fixture", Client: client, DownstreamToken: "downstream-fixture"}
@@ -33,6 +37,25 @@ func TestTargetPreservesEscapingAndQuery(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/prefix/v1/responses/a%2Fb", result.EscapedPath())
 	require.Equal(t, "z=a%20b&x=%2f&x=2", result.RawQuery)
+}
+
+func TestTargetNeverUsesCallerAuthority(t *testing.T) {
+	for _, raw := range []string{
+		"https://other.example.invalid/v1/responses?x=1",
+		"//other.example.invalid/v1/responses",
+		"/%2f%2fother.example.invalid/v1/responses",
+		"https://user:password@other.example.invalid/v1/responses",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			incoming, err := url.Parse(raw)
+			require.NoError(t, err)
+			target, err := Target("https://configured.example.invalid/prefix", incoming)
+			require.NoError(t, err)
+			require.Equal(t, "https", target.Scheme)
+			require.Equal(t, "configured.example.invalid", target.Host)
+			require.Nil(t, target.User)
+		})
+	}
 }
 
 func TestHTTPExactRequestAndResponse(t *testing.T) {
@@ -160,7 +183,7 @@ func TestWebSocketPayloadsAndMetering(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.CloseNow()
+		defer func() { _ = conn.CloseNow() }()
 		kind, got, err := conn.Read(ctx)
 		if err != nil {
 			return
@@ -188,7 +211,7 @@ func TestWebSocketPayloadsAndMetering(t *testing.T) {
 		HTTPHeader: http.Header{"Session_id": []string{"caller-ws"}},
 	})
 	require.NoError(t, err)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	require.NoError(t, conn.Write(ctx, websocket.MessageText, payload))
 	for _, want := range [][]byte{created, done, done} {
 		_, got, readErr := conn.Read(ctx)
@@ -219,7 +242,7 @@ func TestWebSocketUpgradeErrorBodyNotTruncated(t *testing.T) {
 	req.Header.Set("Sec-Websocket-Key", base64.StdEncoding.EncodeToString(make([]byte, 16)))
 	resp, err := proxy.Client().Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Equal(t, 403, resp.StatusCode)

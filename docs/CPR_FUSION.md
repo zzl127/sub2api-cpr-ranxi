@@ -23,7 +23,7 @@ replay or substitution is introduced.
 ## Account Setup
 
 1. Build this checkout, rather than installing a binary from an upstream README
-   link. The frontend build requires pnpm 9; the Go toolchain is pinned by
+   link. The frontend build requires Node 22 or newer and pnpm 9; the Go toolchain is pinned by
    `backend/go.mod`. The existing Dockerfile can build the complete application.
 2. Open Accounts and choose **+ CPR**. Enter a name, CPR inference URL and
    CPR Admin Key. An optional separate admin URL supports split deployments.
@@ -138,8 +138,8 @@ corepack pnpm@9.15.9 run build
 cd ../backend
 go test -tags=unit -p 1 ./internal/pkg/rawproxy ./internal/pkg/httputil ./internal/service/openai_ws_v2
 go test -tags=unit -p 1 ./internal/service -run TestCPR
-go build -tags=embed -o ../.fixture-bin/sub2api ./cmd/server
-go build -tags=fullappfixture -o ../.fixture-bin/fullapp-fixture ./cmd/fullapp-fixture
+CGO_ENABLED=0 go build -tags=embed -o ../.fixture-bin/sub2api ./cmd/server
+CGO_ENABLED=0 go build -tags=fullappfixture -o ../.fixture-bin/fullapp-fixture ./cmd/fullapp-fixture
 cd ..
 FULLAPP_BIN="$PWD/.fixture-bin/sub2api" \
 FULLAPP_FIXTURE_BIN="$PWD/.fixture-bin/fullapp-fixture" \
@@ -182,3 +182,30 @@ account and API-key concurrency/queue slots returned to zero. Cleanup completed.
 These are selected regressions and synthetic end-to-end checks, not the entire
 repository test suite, a real-account CPR test, or a production load test.
 GitHub Actions results are separate from this pre-publication verification.
+
+## Security and CI Hardening
+
+The follow-up source update on 2026-10-29 upgrades `vue-i18n` and
+`@intlify/message-compiler` to `11.4.14` for `GHSA-83rm-6c8r-g728`, and
+`golang.org/x/net` to `v0.62.0` for `GO-2026-6860`, including the required
+companion `golang.org/x/*` dependency updates. Frontend CI jobs use Node 22.
+No new vulnerability-audit exceptions were added.
+
+The update also restores tracked deployment scripts' executable bits, mounts
+the CPR account dialog only while it is open, updates the route-order
+regression to include CPR admission without removing authorization checks,
+and addresses checked-close/unused-code lint findings. Raw relay destinations
+remain bound to the configured, policy-validated CPR origin; regression tests
+reject attempts to substitute an inbound authority and verify redirects are
+not followed. The two corresponding taint-analysis annotations document this
+boundary locally, not a global SSRF-check exclusion.
+
+The Linux application fixture is compiled with `CGO_ENABLED=0` so artifacts
+built on a glibc host can start in its Alpine runtime containers.
+
+The production-dependency audit reports **0 high, 0 critical, 13 moderate and
+2 low** advisories. The Go scan reports **0 reachable vulnerabilities**, with
+2 module-level advisories outside the application's detected call paths.
+These residual findings are not a claim that every dependency is vulnerability
+free. The frontend critical suite passes **109 files / 1783 tests**, including
+the added interpolation/srcdoc regression checks.

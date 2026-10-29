@@ -464,7 +464,7 @@
     </TablePageLayout>
     <NewAPIUpstreamConfigDialog v-if="authStore.isAdmin" :show="newAPIConfigAccount !== null" :account="newAPIConfigAccount" @close="newAPIConfigAccount = null" @saved="reload" />
     <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
-    <CPRAccountModal :show="showCPR" :account="edAcc" :proxies="proxies" :groups="groups" @close="showCPR = false" @saved="reload" />
+    <CPRAccountModal v-if="showCPR" :show="showCPR" :account="edAcc" :proxies="proxies" :groups="groups" @close="showCPR = false" @saved="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" @tested="reload" />

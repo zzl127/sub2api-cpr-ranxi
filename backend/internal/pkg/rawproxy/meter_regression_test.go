@@ -21,12 +21,14 @@ func TestHTTPFirstTokenIncludesHeaderWaitAndDoesNotBufferWire(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("X-Request-Id", "cpr-fixture-id")
 		w.WriteHeader(200)
-		w.(http.Flusher).Flush()
+		require.NoError(t, http.NewResponseController(w).Flush())
 		time.Sleep(30 * time.Millisecond)
-		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"early\"}\n\n")
-		w.(http.Flusher).Flush()
+		_, err := io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"early\"}\n\n")
+		require.NoError(t, err)
+		require.NoError(t, http.NewResponseController(w).Flush())
 		time.Sleep(150 * time.Millisecond)
-		io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		_, err = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		require.NoError(t, err)
 	}))
 	defer up.Close()
 	results := make(chan *Result, 1)
@@ -38,7 +40,7 @@ func TestHTTPFirstTokenIncludesHeaderWaitAndDoesNotBufferWire(t *testing.T) {
 	start := time.Now()
 	resp, err := proxy.Client().Get(proxy.URL + "/v1/responses")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	buf := make([]byte, 256)
 	n, err := resp.Body.Read(buf)
 	require.NoError(t, err)
@@ -55,7 +57,7 @@ func TestHTTPFirstTokenIncludesHeaderWaitAndDoesNotBufferWire(t *testing.T) {
 	require.GreaterOrEqual(t, *result.FirstToken, 170*time.Millisecond)
 	require.Less(t, *result.FirstToken, result.Duration)
 	require.Less(t, *result.FirstToken, time.Since(start))
-	require.Equal(t, "cpr-fixture-id", result.Sample.UpstreamHeaders.Get("X-Request-Id"))
+	require.Equal(t, "cpr-fixture-id", result.UpstreamHeaders.Get("X-Request-Id"))
 }
 
 func TestMeterRequiresBothTokenTotals(t *testing.T) {
@@ -83,7 +85,7 @@ func TestWebSocketTurnMeterRetainsTierAndStartsBeforeCreated(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer conn.CloseNow()
+		defer func() { _ = conn.CloseNow() }()
 		for turn := 0; turn < 2; turn++ {
 			_, _, err := conn.Read(ctx)
 			if err != nil {
@@ -112,7 +114,7 @@ func TestWebSocketTurnMeterRetainsTierAndStartsBeforeCreated(t *testing.T) {
 	defer proxy.Close()
 	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(proxy.URL, "http")+"/v1/responses", nil)
 	require.NoError(t, err)
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	for turn, body := range []string{
 		`{"type":"response.create","model":"caller-model","service_tier":"priority","reasoning":{"effort":"high"}}`,
 		`{"type":"response.create","model":"caller-model"}`,

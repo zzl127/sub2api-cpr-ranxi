@@ -54,6 +54,8 @@ jobs:
           go test -tags=unit -p 1 ./internal/service -run TestCPR
       - name: Build application and guarded fixture
         working-directory: backend
+        env:
+          CGO_ENABLED: '0'
         run: |
           go build -tags=embed -p 1 -o ../.fixture-bin/sub2api ./cmd/server
           go build -tags=fullappfixture -p 1 -o ../.fixture-bin/fullapp-fixture ./cmd/fullapp-fixture

@@ -110,8 +110,8 @@ func (s *OpenAIGatewayService) proxyCPRWebSocket(ctx context.Context, c *gin.Con
 	client := &cprFrameSide{conn: downstream, read: reader.read}
 	server := &cprFrameSide{conn: upstream, read: upstream.Read, peer: client}
 	client.peer = server
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	meta := newOpenAIWSPassthroughUsageMeta(hooks.InitialRequestModel, first)
 	meta.initFromFirstFrame(first, meta.requestModelForFrame(first))

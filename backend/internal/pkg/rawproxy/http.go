@@ -160,7 +160,8 @@ func HTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, body []by
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, r.Method, target.String(), bytes.NewReader(body))
+	// Target fixes the origin to the configured BaseURL; caller input supplies only path/query.
+	request, err := http.NewRequestWithContext(ctx, r.Method, target.String(), bytes.NewReader(body)) //nolint:gosec // G704: the CPR service validates the configured origin, never the caller's authority.
 	if err != nil {
 		return nil, err
 	}
@@ -171,11 +172,11 @@ func HTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, body []by
 	request.Header = RequestHeaders(headers, opt.Token)
 	client := *opt.Client
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	response, err := client.Do(request)
+	response, err := client.Do(request) //nolint:gosec // G704: configured origin only; redirects are disabled immediately above.
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	result := &Result{StatusCode: response.StatusCode, Headers: response.Header.Clone()}
 	CopyResponseHeaders(w.Header(), response.Header)
 	// Trailers are separate end-to-end fields. Never turn them into body events.
@@ -248,7 +249,7 @@ func HTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, body []by
 		w.Header()[http.TrailerPrefix+name] = append([]string(nil), values...)
 	}
 	result.Sample, result.Duration = meter.Sample, time.Since(start)
-	result.Sample.UpstreamHeaders = response.Header.Clone()
+	result.UpstreamHeaders = response.Header.Clone()
 	result.ClientDisconnect = sink.failed || ctx.Err() != nil
 	return result, err
 }
