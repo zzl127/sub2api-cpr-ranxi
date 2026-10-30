@@ -137,7 +137,6 @@ func NewAccountHandler(
 
 // CreateAccountRequest represents create account request
 type CreateAccountRequest struct {
-	CPRAutoConfigure        bool           `json:"cpr_auto_configure"`
 	Name                    string         `json:"name" binding:"required"`
 	Notes                   *string        `json:"notes"`
 	Platform                string         `json:"platform" binding:"required"`
@@ -1112,14 +1111,13 @@ func (h *AccountHandler) Create(c *gin.Context) {
 
 	result, err := executeAdminIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		if req.Type == service.AccountTypeCPR {
-			if !req.CPRAutoConfigure {
-				return nil, errors.New("CPR accounts require explicit one-to-one provisioning")
+			gateway, readErr := h.openAIGatewayService.GetCPRGateway(ctx)
+			if readErr != nil {
+				return nil, readErr
 			}
-			credentials, setupErr := h.configureCPR(ctx, req.Platform, req.Credentials)
-			if setupErr != nil {
-				return nil, setupErr
+			if gateway.BaseURL == "" {
+				return nil, infraerrors.BadRequest("CPR_GATEWAY_REQUIRED", "configure the global CPR gateway before adding client keys")
 			}
-			req.Credentials = credentials
 		}
 		account, execErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 			Name:                  req.Name,

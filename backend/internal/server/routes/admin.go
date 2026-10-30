@@ -406,7 +406,8 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
 	accounts := admin.Group("/accounts")
 	{
-		accounts.POST("/cpr/discover", h.Admin.Account.DiscoverCPR)
+		accounts.GET("/cpr/gateway", h.Admin.Account.GetCPRGateway)
+		accounts.PUT("/cpr/gateway", h.Admin.Account.UpdateCPRGateway)
 		accounts.GET("/openai-request-timezones", h.Admin.Account.GetOpenAIRequestTimezones)
 		accounts.GET("", h.Admin.Account.List)
 		accounts.GET("/management-capabilities", h.Admin.Setting.GetAccountManagementCapabilities)

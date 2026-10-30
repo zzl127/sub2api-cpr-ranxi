@@ -33,8 +33,7 @@ func cprTestConfig() *config.Config {
 func fusionCPRAccount() *Account {
 	return &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeCPR,
 		Credentials: map[string]any{
-			"base_url": "http://127.0.0.1:18090", "cpr_account_id": "acct_fixture",
-			"api_key": "fixture-client-not-a-secret", "admin_api_key": "fixture-admin-not-a-secret",
+			"api_key": "fixture-client-not-a-secret",
 		}}
 }
 
@@ -77,33 +76,41 @@ func TestCPRFusionTransportCloneRejectsInvalidDefaults(t *testing.T) {
 	require.False(t, base.DisableCompression)
 }
 
-func TestCPRFusionInvalidSnapshotLockReturnsError(t *testing.T) {
+func TestCPRFusionKeyUsageNeverReadsRemoteAccountQuota(t *testing.T) {
 	s := &AccountUsageService{}
 	a := fusionCPRAccount()
-	s.cprSnapshotLocks.Store(a.ID, "invalid")
-	_, err := s.getCPRUsage(context.Background(), a, false)
-	require.ErrorContains(t, err, "snapshot lock unavailable")
+	a.Extra = map[string]any{"cpr_account_snapshot": map[string]any{"five_hour": 100}}
+	for _, force := range []bool{false, true} {
+		usage, err := s.getUsageForAccount(context.Background(), a, force)
+		require.NoError(t, err)
+		require.Equal(t, "client_key", usage.CPR.Mode)
+		require.Equal(t, "cpr", usage.CPR.QuotaSource)
+		require.False(t, usage.CPR.QuotaAvailable)
+		require.Nil(t, usage.FiveHour)
+		require.Nil(t, usage.SevenDay)
+		require.Nil(t, usage.UpdatedAt)
+	}
 }
 
-func TestCPRFusionAdminRootDoesNotInheritInferenceVersion(t *testing.T) {
+func TestCPRFusionGatewayNeverComesFromAccountCredentials(t *testing.T) {
 	a := fusionCPRAccount()
-	a.Credentials["base_url"] = "https://cpr.example.invalid/proxy/v1/"
-	require.Equal(t, "https://cpr.example.invalid/proxy", a.GetCPRAdminBaseURL())
-	a.Credentials["admin_base_url"] = "https://admin.example.invalid/separate"
-	require.Equal(t, "https://admin.example.invalid/separate", a.GetCPRAdminBaseURL())
+	a.Credentials["base_url"] = "https://untrusted.example.invalid"
+	a.Credentials["admin_base_url"] = "https://admin.example.invalid"
+	s := fusionCPRService("https://cpr.example.invalid/proxy/v1")
+	base, err := s.validatedCPRBaseURL(context.Background(), a)
+	require.NoError(t, err)
+	require.Equal(t, "https://cpr.example.invalid/proxy/v1", base)
+	require.Empty(t, a.GetOpenAIBaseURL(), "generic transports must not default a CPR key to the official API")
 }
 
-func TestCPRFusionMappingCannotBeRepointed(t *testing.T) {
+func TestCPRFusionClientKeyCanBeRotatedWithoutChangingChannelType(t *testing.T) {
 	a := fusionCPRAccount()
 	require.NoError(t, validateCPRUpdate(a, &UpdateAccountInput{Name: "new name"}))
 	require.Error(t, validateCPRUpdate(a, &UpdateAccountInput{Type: AccountTypeAPIKey}))
-	require.Error(t, validateCPRUpdate(a, &UpdateAccountInput{Credentials: map[string]any{
-		"base_url": "https://other.invalid", "cpr_account_id": "acct_fixture",
-	}}))
-	creds := MergePreservingSensitiveCreds(a.Credentials, map[string]any{
-		"base_url": a.GetCPRGatewayBaseURL(), "cpr_account_id": a.GetCPRAccountID(),
-	})
+	creds := map[string]any{"api_key": "another-existing-pool-key"}
 	require.NoError(t, validateCPRUpdate(a, &UpdateAccountInput{Credentials: creds}))
+	require.NoError(t, ValidateCPRCredentials(a.Platform, a.Type, creds))
+	require.Equal(t, "fixture-client-not-a-secret", a.GetCPRClientKey())
 }
 
 func TestCPRFusionHTTPPreservesCompressedWireAndCallerIdentity(t *testing.T) {
@@ -128,7 +135,6 @@ func TestCPRFusionHTTPPreservesCompressedWireAndCallerIdentity(t *testing.T) {
 	}))
 	defer upstream.Close()
 	a := fusionCPRAccount()
-	a.Credentials["base_url"] = upstream.URL
 	req := httptest.NewRequest("POST", "/v1/responses?a=1&a=2", bytes.NewReader(wire))
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("User-Agent", "original-client/1")
@@ -143,7 +149,7 @@ func TestCPRFusionHTTPPreservesCompressedWireAndCallerIdentity(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = req
-	s := &OpenAIGatewayService{cfg: cprTestConfig()}
+	s := fusionCPRService(upstream.URL)
 	result, err := s.forwardCPR(context.Background(), c, a, []byte(`{"model":"rewritten"}`))
 	require.NoError(t, err)
 	require.Equal(t, responseBody, recorder.Body.Bytes())
@@ -165,11 +171,10 @@ func TestCPRFusionHTTPDoesNotRetryOrWrapUpstreamError(t *testing.T) {
 	}))
 	defer upstream.Close()
 	a := fusionCPRAccount()
-	a.Credentials["base_url"] = upstream.URL
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
-	result, err := (&OpenAIGatewayService{cfg: cprTestConfig()}).forwardCPR(context.Background(), c, a, []byte(`{"model":"gpt-6-astra"}`))
+	result, err := fusionCPRService(upstream.URL).forwardCPR(context.Background(), c, a, []byte(`{"model":"gpt-6-astra"}`))
 	require.ErrorIs(t, err, ErrCPRRelay)
 	require.NotNil(t, result)
 	require.Equal(t, 429, recorder.Code)
@@ -186,17 +191,16 @@ func TestCPRFusionDoesNotForwardAfterLocalResponseStarted(t *testing.T) {
 	}))
 	defer upstream.Close()
 	a := fusionCPRAccount()
-	a.Credentials["base_url"] = upstream.URL
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 	_, _ = c.Writer.Write([]byte(": prior response\n\n"))
-	_, err := (&OpenAIGatewayService{cfg: cprTestConfig()}).forwardCPR(context.Background(), c, a, []byte(`{"model":"gpt-6-astra"}`))
+	_, err := fusionCPRService(upstream.URL).forwardCPR(context.Background(), c, a, []byte(`{"model":"gpt-6-astra"}`))
 	require.ErrorIs(t, err, ErrCPRRelay)
 	require.Zero(t, calls.Load())
 }
 
 func TestCPRFusionUsesRanxiSemanticTTFT(t *testing.T) {
-	s := &OpenAIGatewayService{cfg: cprTestConfig()}
+	s := fusionCPRService("http://127.0.0.1:18090")
 	options, cleanup, err := s.cprRelayOptions(context.Background(), fusionCPRAccount())
 	defer cleanup()
 	require.NoError(t, err)
@@ -259,11 +263,10 @@ func TestCPRFusionObservesImagesWithoutChangingResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 	a := fusionCPRAccount()
-	a.Credentials["base_url"] = upstream.URL
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest("POST", "/v1/images/generations", nil)
-	result, err := (&OpenAIGatewayService{cfg: cprTestConfig()}).forwardCPR(context.Background(), c, a,
+	result, err := fusionCPRService(upstream.URL).forwardCPR(context.Background(), c, a,
 		[]byte(`{"model":"gpt-image-2","size":"1024x1024","n":2}`))
 	require.NoError(t, err)
 	require.Equal(t, body, recorder.Body.String())
@@ -287,11 +290,10 @@ func TestCPRFusionMissingObservationIsNotKnownZeroUsage(t *testing.T) {
 			}))
 			defer upstream.Close()
 			a := fusionCPRAccount()
-			a.Credentials["base_url"] = upstream.URL
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
-			result, err := (&OpenAIGatewayService{cfg: cprTestConfig()}).forwardCPR(context.Background(), c, a,
+			result, err := fusionCPRService(upstream.URL).forwardCPR(context.Background(), c, a,
 				[]byte(`{"model":"gpt-6-astra"}`))
 			require.NoError(t, err)
 			require.Equal(t, body, recorder.Body.String())

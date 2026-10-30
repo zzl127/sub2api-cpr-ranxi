@@ -55,8 +55,7 @@ func TestCPRFusionWebSocketRoundsKeepFramesAndReleaseHooks(t *testing.T) {
 	}))
 	defer upstream.Close()
 	a := fusionCPRAccount()
-	a.Credentials["base_url"] = upstream.URL
-	s := &OpenAIGatewayService{cfg: cprTestConfig()}
+	s := fusionCPRService(upstream.URL)
 	results := make(chan *OpenAIForwardResult, 3)
 	var admissions atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

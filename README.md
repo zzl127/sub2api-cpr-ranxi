@@ -1,10 +1,13 @@
 # Sub2API CPR Fusion
 
-This derivative is based on **Ranxi v2.17.6** and adds a dedicated CPR account
-channel with opaque payload forwarding. See [CPR integration](docs/CPR_FUSION.md)
+This derivative is based on **Ranxi v2.17.6** and adds CPR **client-key channels**
+with opaque payload forwarding. Configure the CPR gateway once, then enter
+existing CPR client API keys. CPR retains each key's existing permissions,
+account pool and scheduling; no Admin Key or individual CPR account binding is
+needed. See [CPR integration](docs/CPR_FUSION.md)
 for setup, provenance, scope and verification status.
 
-**Source preview: `2.17.6-cpr.1`.** This is not an official Ranxi or Klno release.
+**Source preview: `2.17.6-cpr.2`.** This is not an official Ranxi or Klno release.
 It has not been deployed over an existing service. Build this checkout to use
 the CPR integration; the inherited installation links below install upstream
 releases, not this derivative. The built-in updater is scoped to

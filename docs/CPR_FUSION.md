@@ -1,6 +1,6 @@
 # CPR Fusion
 
-Version: `2.17.6-cpr.1`, a source preview. No existing service is replaced or
+Version: `2.17.6-cpr.2`, a source preview. No existing service is replaced or
 automatically migrated. This integration does not require a modified CPR image.
 
 ## Provenance
@@ -8,7 +8,7 @@ automatically migrated. This integration does not require a modified CPR image.
 Base: ranxi2001/sub2api v2.17.6, commit
 `a7ba38d873ff97faf3a127a97ab808d8860bb8b8`.
 
-CPR account-management components are adapted from KlN-4096/sub2api
+The dedicated CPR channel type and protocol integration were adapted from KlN-4096/sub2api
 v0.2.19-klno.1, commit `bdff1129ffbd22947612f83cd09d23bf3fa47f5d`,
 under the included LGPL v3 license. Original copyright and
 license notices are retained. This is a separately maintained derivative,
@@ -20,20 +20,22 @@ authorization, tenant boundaries and lifecycle hooks. CPR owns upstream
 identity and request transformations. No turn-state generation, storage,
 replay or substitution is introduced.
 
-## Account Setup
+## Client Key Setup
 
 1. Build this checkout, rather than installing a binary from an upstream README
    link. The frontend build requires Node 22 or newer and pnpm 9; the Go toolchain is pinned by
    `backend/go.mod`. The existing Dockerfile can build the complete application.
-2. Open Accounts and choose **+ CPR**. Enter a name, CPR inference URL and
-   CPR Admin Key. An optional separate admin URL supports split deployments.
-   If omitted, a trailing `/v1` is removed from the inference URL for admin calls.
-3. Use Discover to list CPR OpenAI accounts. This operation is read-only.
-4. Select one remote account, a local OpenAI group, a concurrency limit and,
-   if required, a proxy for the Sub2API-to-CPR hop. CPR still owns its own
-   outbound account proxy and identity.
-5. Confirm provisioning and save. This creates or reuses a CPR group containing
-   only the selected account, and a client key scoped only to that group.
+2. Open Accounts and choose **+ CPR Key**. Save the **global CPR gateway URL**
+   once, for example `http://127.0.0.1:18090` or a gateway URL ending in `/v1`.
+   It is stored in the local settings database as `cpr_gateway_base_url`.
+3. Enter a name and an **existing CPR client API key**, not a CPR Admin Key.
+   One local channel represents one client key, which may already address an
+   entire account pool. Subsequent keys reuse the saved global URL.
+4. Select local OpenAI groups, a local concurrency limit and, if required, a
+   proxy for the Sub2API-to-CPR hop. These are local downstream access/admission
+   settings, not changes to CPR's permissions or account pool.
+5. Save. This creates only a local channel. CPR receives inference through the
+   supplied key and continues to select accounts under its existing policy.
 6. Use a downstream Sub2API key associated with the local group. Call CPR's
    actual model names; this channel does not rewrite model aliases on the wire.
 
@@ -43,17 +45,32 @@ to the Sub2API process or container, not to the administrator's browser.
 Do not disable a deployment's security policy globally just to connect a remote
 gateway; configure the required permitted destinations.
 
-Only dedicated single-account CPR groups and client keys are provisioned.
-Discovery never writes to CPR. Deleting the local account does not delete
-the remote account or its resources. Admin credentials must never enter
-inference requests or ordinary account DTOs. Preserve the Admin Key as a secret.
+There is no CPR admin API integration: no account discovery, remote account
+binding, group creation, key creation/reveal, or pool membership writes.
+Adding, editing or deleting a local channel does not change CPR resources.
+Client keys are redacted in ordinary account responses; leaving the field
+empty while editing retains the current key. Entering another key rotates it.
 
-The selected CPR gateway and remote account are immutable for a local mapping.
-Create a new mapping instead of repointing an existing account's history.
-Provisioning is serialized within one process. CPR does not provide a
-distributed transaction with Sub2API: failed saves may leave a reusable remote
-group/key, and concurrent provisioning by separate instances requires care.
-Do not manually widen a managed CPR group's membership or its client-key scope.
+The admin-only local endpoints `GET/PUT /api/v1/admin/accounts/cpr/gateway`
+read/write `{"base_url":"..."}`. Saving is not a connectivity test and does not
+make a request to CPR. Changing an existing destination requires confirmation
+in the UI because all CPR keys will be sent to the new trusted destination.
+Use an empty string to stop new CPR forwarding; an omitted field is rejected.
+The live setting is read once per outgoing connection, without a stale local
+cache. Existing requests/WebSocket connections retain their original target.
+Storage failures, missing configuration and rejected URL policies fail closed:
+there is no account-local URL fallback or fallback to the official OpenAI API.
+
+### Upgrading From cpr.1
+
+The old single-account provisioning workflow was the wrong integration model
+and has been removed. Configure the global URL, edit each legacy local CPR
+channel and supply the desired existing pool key. The form identifies legacy
+bindings and requires an explicit replacement key. Editing removes the retired
+local Admin Key, admin URL, per-account URL and remote account ID.
+Old keys do not automatically acquire wider pool access. No old remote
+groups/keys/accounts are deleted, widened or otherwise migrated. A legacy
+channel must not be assumed to represent a whole pool until its key is replaced.
 
 ## Relay Contract
 
@@ -101,15 +118,16 @@ Ranxi's semantic/visible TTFT classifier and WebSocket turn timing are retained.
 In particular, a later WS delta without a response ID can retain Ranxi's null
 TTFT result. This adapter does not invent a first-token timestamp.
 
-## Quota Display
+## Usage and Quota
 
-Remote quota is a read-only observation, not proof of a successful request,
-and an unavailable observation is never presented as zero usage.
-The display caches queries for ten minutes and supports explicit query refresh.
-It distinguishes the last successful query from CPR's reported quota age.
-A failed query can display an earlier snapshot as stale.
-Remote quota snapshots never overwrite the host's OAuth scheduling windows.
-This integration does not reset quota, revive accounts or rotate accounts.
+The local usage journal/billing still observes inference responses.
+Remaining pool quota and upstream account status are managed in CPR. A pool key
+must not be presented as the 5h/7d quota of an arbitrarily selected account.
+The account cell therefore says to view quota in CPR and makes no quota polling
+requests. The usage API returns `cpr: {"mode":"client_key","quota_source":"cpr",
+"quota_available":false}` without contacting CPR, even on forced refresh.
+Old single-account snapshots are ignored. Unknown quota is not zero or unlimited
+quota, and no OAuth scheduling window is overwritten.
 
 ## Limits and Verification
 
@@ -122,7 +140,8 @@ Therefore this preview does **not** guarantee lossless accounting for oversized
 payloads, unsupported encodings, malformed usage, or streams without final usage.
 Operators must reconcile these cases before commercial deployment.
 
-Mock-backed tests cover one-to-one provisioning, credential separation,
+Mock-backed tests cover global URL persistence, hot reload, fail-closed reads,
+client-key-only credentials, retired binding cleanup, unchanged key permissions,
 compressed HTTP byte preservation, upstream errors without replay, cumulative
 usage, image accounting, tier pricing, native TTFT and WebSocket round handling.
 The frontend has dedicated CPR modal tests and uses the existing UI patterns.
@@ -154,14 +173,14 @@ balance debit and released concurrency/queue slots. It does not modify any
 existing database, service or account. `DOCKER_BIN` and `DOCKER_HOST` may select
 an isolated build daemon.
 
-Real CPR admin provisioning, real upstream inference, long-running load,
-all media combinations and cross-instance provisioning still require a
+Real upstream inference through existing CPR keys, long-running load,
+all media combinations and real multi-key pool behavior still require a
 separate staging acceptance run. No production deployment is part of this
 source publication. Build-time verification results are recorded separately.
 
 ## Verification Record: 2026-10-29
 
-The source-preview verification performed before publication:
+Historical verification of **cpr.1**, before the client-key correction:
 
 | Check | Result |
 | --- | --- |
@@ -182,6 +201,33 @@ account and API-key concurrency/queue slots returned to zero. Cleanup completed.
 These are selected regressions and synthetic end-to-end checks, not the entire
 repository test suite, a real-account CPR test, or a production load test.
 GitHub Actions results are separate from this pre-publication verification.
+These historical results do not certify the cpr.2 changes.
+
+## Client-Key Verification: 2026-10-30
+
+The cpr.2 correction was verified in an isolated build environment:
+
+- CPR service/relay, native billing/service-tier/TTFT/credential regressions and
+  the complete gateway route test package passed.
+- The uncapped backend lint run reported 0 issues.
+- All 8 CPR frontend tests, frontend lint, i18n checks, type checks and the
+  production frontend build passed.
+- The separate frontend critical suite passed 109 files / 1783 tests.
+- The real application accepted a client-key-only channel through its admin
+  API after saving the shared gateway. Unauthenticated settings access and
+  updates without `base_url` were rejected.
+- `/v1/models` preserved the synthetic CPR key's model manifest.
+- The synthetic CPR observed **zero admin API requests**.
+- Three SSE requests and two WebSocket turns produced exactly 5 usage rows,
+  5 deduplication rows, 35 input tokens and 10 output tokens. The synthetic
+  balance changed from 10 to 9.99983; concurrency was bounded to 2 and all
+  observed slots/queues were released.
+
+The disposable fixture database contains synthetic admin onboarding state;
+the runner does not accept an agreement on behalf of a real operator or weaken
+the production admin/authentication guards. Test containers and their internal
+network were removed. These results use no real CPR key or upstream account
+and are not a production deployment or a real-account/load acceptance test.
 
 ## Security and CI Hardening
 

@@ -12,6 +12,7 @@ from pathlib import Path
 import secrets
 import subprocess
 import time
+import urllib.error
 import urllib.request
 
 
@@ -50,15 +51,17 @@ def main():
         assert address.version == 4 and address.is_private and not address.is_loopback, "invalid fixture address"
         return str(address) + ":" + str(port)
 
-    def request(endpoint, path, body=None, auth=False):
+    def request(endpoint, path, body=None, auth=False, token=None, method=None):
         headers = {}
         if auth:
             headers["Authorization"] = "Bearer " + key
+        if token:
+            headers["Authorization"] = "Bearer " + token
         raw = None
         if body is not None:
             raw = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        req = urllib.request.Request("http://" + endpoint + path, data=raw, headers=headers)
+        req = urllib.request.Request("http://" + endpoint + path, data=raw, headers=headers, method=method)
         with opener.open(req, timeout=30) as response:
             return response.status, response.read()
 
@@ -117,12 +120,12 @@ def main():
         port = internal_endpoint(app, 8080)
         hosts.extend(["--add-host", app + ":" + port.split(":")[0]])
         wait(lambda: request(port, "/health")[0] == 200, 180, app)
-        stage = "seed"
+        origin = "http://" + model + ":9090"
         data = {
             "database": {"host": pg, "port": 5432, "user": "fixture", "password": password,
                          "dbname": "bootstrap_fixture", "sslmode": "disable"},
             "redis": {"host": redis, "port": 6379, "db": 0},
-            "origin": "http://" + model + ":9090", "api_key": key,
+            "origin": origin, "api_key": key,
         }
 
         def operate(operation):
@@ -131,8 +134,51 @@ def main():
                                    "golang:1.27.3-alpine", "/fixture", operation],
                                   json.dumps(data).encode()))
 
+        stage = "synthetic-admin-ui-state"
+        operate("seed-admin-ui")
+        stage = "global-gateway-and-client-key-admin-api"
+        login = json.loads(request(port, "/api/v1/auth/login", {
+            "email": env["ADMIN_EMAIL"], "password": env["ADMIN_PASSWORD"],
+        })[1])
+        admin_token = login["data"]["access_token"]
+        settings_path = "/api/v1/admin/accounts/cpr/gateway"
+        for method, body in (("GET", None), ("PUT", {"base_url": "https://untrusted.invalid"})):
+            try:
+                request(port, settings_path, body, method=method)
+            except urllib.error.HTTPError as error:
+                assert error.code == 401, "global gateway must require admin authentication"
+                error.close()
+            else:
+                raise RuntimeError("unauthenticated global gateway access")
+        initial = json.loads(request(port, settings_path, token=admin_token)[1])["data"]
+        assert initial["base_url"] == "", "unexpected pre-existing CPR configuration"
+        saved = json.loads(request(port, settings_path, {"base_url": origin},
+                                  token=admin_token, method="PUT")[1])["data"]
+        assert saved["base_url"] == origin, "global gateway not saved"
+        try:
+            request(port, settings_path, {}, token=admin_token, method="PUT")
+        except urllib.error.HTTPError as error:
+            assert error.code == 400, "missing base_url must not clear the shared destination"
+            error.close()
+        else:
+            raise RuntimeError("missing gateway field was accepted")
+        channel = json.loads(request(port, "/api/v1/admin/accounts", {
+            "name": "existing-pool-key-api-fixture", "platform": "openai", "type": "cpr",
+            "credentials": {"api_key": "synthetic-upstream-admin-only"},
+            "concurrency": 2, "priority": 50, "group_ids": [],
+        }, token=admin_token)[1])["data"]
+        assert channel["type"] == "cpr", "CPR client key was not accepted"
+        assert not any(field in channel["credentials"] for field in
+                       ("api_key", "admin_api_key", "cpr_account_id", "base_url")), "credential response leaked legacy binding or key"
+        usage = json.loads(request(port, "/api/v1/admin/accounts/" + str(channel["id"]) + "/usage",
+                                   token=admin_token)[1])["data"]
+        assert usage["cpr"] == {"mode": "client_key", "quota_source": "cpr", "quota_available": False}, "single-account quota still queried"
+        assert json.loads(request(model_port, "/fixture/stats")[1])["accepted"] == 0, "configuration must not generate inference"
+        stage = "seed"
         seeded = operate("seed-cpr")
         data.update({field: seeded[field] for field in ("user_id", "api_key_id", "account_id")})
+        models = json.loads(request(port, "/v1/models", auth=True)[1])
+        assert models == {"object": "list", "data": [{"id": "gpt-6.1-sol", "object": "model", "owned_by": "fixture-pool"}]}, "CPR key model scope was not relayed"
         stage = "relay-concurrency-and-billing"
 
         def inference():
@@ -162,7 +208,10 @@ def main():
         status = wait(lambda: (lambda value: value if value["usage_rows"] == 5 and value["dedup_rows"] == 5 else None)(operate("status")), 30)
         assert status["input_tokens"] == 35 and status["output_tokens"] == 10, "WebSocket usage mismatch"
         assert all(status[name] == 0 for name in ("user_slots", "account_slots", "api_key_slots", "api_key_queue_active", "api_key_queue_waiting")), "WebSocket slot leak"
+        assert json.loads(request(model_port, "/fixture/stats")[1])["admin_requests"] == 0, "CPR admin API must never be called"
         return {"passed": True, "real_application": True, "synthetic_upstream_only": True,
+                "global_gateway_admin_api": True, "existing_client_key_only": True,
+                "model_manifest_relayed": True, "cpr_admin_requests": 0,
                 "sse_completed": 3, "websocket_completed": 2,
                 "usage_rows": status["usage_rows"], "dedup_rows": status["dedup_rows"],
                 "input_tokens": status["input_tokens"], "output_tokens": status["output_tokens"],

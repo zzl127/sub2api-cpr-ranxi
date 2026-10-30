@@ -124,6 +124,27 @@ func run(op string) error {
 	defer cache.Close()
 	var out fixtureOutput
 	switch op {
+	case "seed-admin-ui":
+		// Test data only, inside the validated disposable fixture database.
+		// Do not invoke an agreement endpoint or alter any production guard.
+		fixtureStage = "synthetic-admin-ui-state"
+		var adminID int64
+		if err := db.QueryRowContext(ctx, `SELECT id FROM users WHERE email=$1 AND role=$2 AND deleted_at IS NULL`,
+			"admin-fixture@example.invalid", service.RoleAdmin).Scan(&adminID); err != nil {
+			return err
+		}
+		ack, err := json.Marshal(service.AdminComplianceAcknowledgement{
+			Version: service.AdminComplianceVersion, AdminUserID: adminID,
+			UserAgent: "synthetic-fixture-only", AcceptedAt: time.Unix(1700000000, 0).UTC(),
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO settings (key,value) VALUES ($1,$2)
+			ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`,
+			fmt.Sprintf("admin_compliance_acknowledgement:%d", adminID), string(ack)); err != nil {
+			return err
+		}
 	case "probe-cpr-ws":
 		if !strings.HasPrefix(in.APIKey, "sk-fixture-") {
 			return errors.New("synthetic key required")
@@ -168,8 +189,7 @@ func run(op string) error {
 			Extra: map[string]any{"openai_passthrough": true}}
 		if op == "seed-cpr" {
 			account.Type = service.AccountTypeCPR
-			account.Credentials["admin_api_key"] = "synthetic-admin-only"
-			account.Credentials["cpr_account_id"] = "acct_fixture"
+			account.Credentials = map[string]any{"api_key": "synthetic-upstream-only"}
 		}
 		fixtureStage = "create-account-group"
 		atomicCreator, ok := accounts.(service.AccountDuplicateRepository)
@@ -277,6 +297,7 @@ func run(op string) error {
 type modelState struct {
 	mu                                    sync.Mutex
 	accepted, completed, active           int
+	adminRequests                         int
 	release                               chan struct{}
 	releaseOnce                           sync.Once
 	failureRelease                        chan struct{}
@@ -289,6 +310,20 @@ type modelState struct {
 func serve() error {
 	s := &modelState{release: make(chan struct{}), failureRelease: make(chan struct{})}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/admin/", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.adminRequests++
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer synthetic-upstream-only" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-6.1-sol","object":"model","owned_by":"fixture-pool"}]}`)
+	})
 	mux.HandleFunc("/fixture/release", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -308,7 +343,7 @@ func serve() error {
 	mux.HandleFunc("/fixture/stats", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]int{"accepted": s.accepted, "completed": s.completed, "active": s.active})
+		_ = json.NewEncoder(w).Encode(map[string]int{"accepted": s.accepted, "completed": s.completed, "active": s.active, "admin_requests": s.adminRequests})
 	})
 	mux.HandleFunc("/fixture/multi-stats", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()

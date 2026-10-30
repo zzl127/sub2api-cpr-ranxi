@@ -1613,10 +1613,8 @@ func (a *Account) IsOpenAIApiKey() bool {
 // grok 走 GetGrokBaseURL，此处对 grok 返回 "" 以保持原有行为。
 func (a *Account) GetOpenAIBaseURL() string {
 	if a != nil && a.Type == AccountTypeCPR {
-		if !a.IsCPR() {
-			return ""
-		}
-		return a.GetCPRGatewayBaseURL()
+		// CPR destinations must be resolved from live global settings, not credentials.
+		return ""
 	}
 	if !a.IsOpenAI() && !a.IsMultiProtocolAPIKey() {
 		return ""

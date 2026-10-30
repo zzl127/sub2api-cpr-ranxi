@@ -1328,7 +1328,7 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 	}
 	switch account.Type {
 	case AccountTypeCPR:
-		if !account.IsCPR() || account.GetCPRGatewayBaseURL() == "" {
+		if !account.IsCPR() {
 			return "", "", errors.New("invalid CPR account configuration")
 		}
 		key := account.GetCPRClientKey()

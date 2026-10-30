@@ -744,6 +744,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		// Strip SSO/password residue that must never sit next to OAuth tokens.
 		account.Credentials = SanitizeStoredCredentials(account.Platform, account.Credentials)
 	}
+	if account.IsCPR() {
+		account.Credentials = cleanCPRCredentials(account.Credentials)
+	}
 	if err := ValidateCPRCredentials(account.Platform, account.Type, account.Credentials); err != nil {
 		return nil, err
 	}

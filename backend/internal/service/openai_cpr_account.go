@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,17 +19,10 @@ import (
 // （UA 强制、时区改写、zstd、chatgpt-account-id、req.Host=chatgpt.com）
 // 都挂在它下面，一旦为真就会与 CPR 自己的改写打架。
 //
-// 约定：一个 cpr 账号恰好对应 CPR 里的一个 OpenAI 账号。做法是给该账号单独建
-// 一个分组，再建一把只绑定该分组的 client key —— CPR 的选号器在
-// scheduling_blocker 第一道闸就做 scope 过滤，候选集被压成 1 个元素后所有轮换
-// 策略等价，必然选中它，且不会 fallback 到组外账号。
-const (
-	cprCredentialBaseURL      = "base_url"       // CPR 网关地址，如 http://127.0.0.1:18081
-	cprCredentialClientKey    = "api_key"        // CPR client key，Authorization: Bearer
-	cprCredentialAdminBaseURL = "admin_base_url" // admin API 地址；留空回落到 base_url
-	cprCredentialAdminAPIKey  = "admin_api_key"  // CPR admin key（x-api-key），用于拉额度
-	cprCredentialAccountID    = "cpr_account_id" // CPR 侧账号 id，形如 acct_xxx
-)
+// 每条本地记录代表一把已有 CPR 客户端 Key；权限、账号池与选号均由 CPR 管理。
+const cprCredentialClientKey = "api_key"
+
+var ErrCPRNotConfigured = errors.New("CPR global gateway or client API key is not configured")
 
 // IsCPR 报告账号是否为 CPR 中继类型。
 func (a *Account) IsCPR() bool {
@@ -45,7 +39,8 @@ func cloneCPRHTTPTransport(base http.RoundTripper) (*http.Transport, error) {
 
 func validateCPROutboundURL(cfg *config.Config, raw string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if cfg == nil || err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery ||
+		u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(raw, "\r\n\t") {
 		return "", ErrCPRNotConfigured
 	}
 	service := &OpenAIGatewayService{cfg: cfg}
@@ -64,25 +59,20 @@ func validateCPRAccountShape(platform, accountType string) error {
 	return nil
 }
 
-// GetCPRGatewayBaseURL 返回 CPR 网关地址。
-//
-// 故意不提供默认值：这里回落到 api.openai.com 会把 CPR 的 client key 当成
-// OpenAI API key 发给官方，是凭据泄漏。调用方拿到空串必须报错而不是兜底。
-func (a *Account) GetCPRGatewayBaseURL() string {
-	if a == nil {
-		return ""
-	}
-	return strings.TrimSpace(a.GetCredential(cprCredentialBaseURL))
-}
-
 // validatedCPRBaseURL 是 CPR 各出站构造器（Responses、透传、input_tokens、alpha search）共用的
-// base_url 守卫：缺地址直接报错，绝不回落到官方端点；拼路径留给调用方。
-func (s *OpenAIGatewayService) validatedCPRBaseURL(account *Account) (string, error) {
-	baseURL := account.GetCPRGatewayBaseURL()
-	if baseURL == "" {
-		return "", errors.New("cpr account requires credentials.base_url")
+// 全局地址守卫：缺地址直接报错，绝不回落到账号地址或官方端点。
+func (s *OpenAIGatewayService) validatedCPRBaseURL(ctx context.Context, account *Account) (string, error) {
+	if !account.IsCPR() {
+		return "", ErrCPRNotConfigured
 	}
-	return validateCPROutboundURL(s.cfg, baseURL)
+	settings, err := s.GetCPRGateway(ctx)
+	if err != nil {
+		return "", err
+	}
+	if settings.BaseURL == "" {
+		return "", ErrCPRNotConfigured
+	}
+	return validateCPROutboundURL(s.cfg, settings.BaseURL)
 }
 
 // GetCPRClientKey 返回用于 Authorization: Bearer 的 CPR client key。
@@ -91,31 +81,4 @@ func (a *Account) GetCPRClientKey() string {
 		return ""
 	}
 	return strings.TrimSpace(a.GetCredential(cprCredentialClientKey))
-}
-
-// GetCPRAdminBaseURL 返回 admin API 地址；未单独配置时与网关同址。
-func (a *Account) GetCPRAdminBaseURL() string {
-	if a == nil {
-		return ""
-	}
-	if adminURL := strings.TrimSpace(a.GetCredential(cprCredentialAdminBaseURL)); adminURL != "" {
-		return adminURL
-	}
-	return strings.TrimSuffix(strings.TrimSuffix(a.GetCPRGatewayBaseURL(), "/"), "/v1")
-}
-
-// GetCPRAdminAPIKey 返回 CPR 的 admin key（x-api-key）。
-func (a *Account) GetCPRAdminAPIKey() string {
-	if a == nil {
-		return ""
-	}
-	return strings.TrimSpace(a.GetCredential(cprCredentialAdminAPIKey))
-}
-
-// GetCPRAccountID 返回该 sub2api 账号绑定的 CPR 账号 id。
-func (a *Account) GetCPRAccountID() string {
-	if a == nil {
-		return ""
-	}
-	return strings.TrimSpace(a.GetCredential(cprCredentialAccountID))
 }

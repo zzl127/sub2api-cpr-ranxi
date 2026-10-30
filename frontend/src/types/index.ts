@@ -1615,7 +1615,7 @@ export interface GrokBillingSummary {
 }
 
 export interface AccountUsageInfo {
-  cpr?: import('./cpr').CPRQuotaSnapshot
+  cpr?: import('./cpr').CPRKeyUsage
   source?: 'passive' | 'active'
   updated_at: string | null
   five_hour: UsageProgress | null
@@ -1711,7 +1711,6 @@ export interface OpenAIResponsesState {
 }
 
 export interface CreateAccountRequest {
-  cpr_auto_configure?: boolean
   name: string
   notes?: string | null
   platform: AccountPlatform

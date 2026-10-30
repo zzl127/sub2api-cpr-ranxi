@@ -1,7 +1,7 @@
 <template>
   <div ref="rootRef" v-if="showUsageWindows || account.type === 'cpr'">
     <ExcelBPSCredentialStatus :state="account.excel_bps_credential_state" />
-    <CPRUsageCell v-if="account.type === 'cpr'" :account-id="account.id" />
+    <CPRUsageCell v-if="account.type === 'cpr'" />
     <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
     <template
       v-else-if="

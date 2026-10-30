@@ -25,7 +25,7 @@ var ErrCPRRelay = errors.New("CPR relay ended without local failover")
 const CPRWireGroupKey = "cpr_wire_group"
 
 func (s *OpenAIGatewayService) cprRelayOptions(ctx context.Context, a *Account) (rawproxy.Options, func(), error) {
-	base, err := s.validatedCPRBaseURL(a)
+	base, err := s.validatedCPRBaseURL(ctx, a)
 	if err != nil {
 		return rawproxy.Options{}, func() {}, err
 	}

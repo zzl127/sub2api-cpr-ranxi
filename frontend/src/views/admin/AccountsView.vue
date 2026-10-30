@@ -18,7 +18,7 @@
             @create="showCreate = true"
           >
             <template #after>
-              <button class="btn btn-secondary" @click="edAcc = null; showCPR = true">+ CPR</button>
+              <button class="btn btn-secondary" @click="edAcc = null; showCPR = true">+ CPR Key</button>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
