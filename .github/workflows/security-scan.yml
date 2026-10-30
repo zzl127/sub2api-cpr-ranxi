@@ -47,6 +47,9 @@ jobs:
       - name: Install dependencies
         working-directory: frontend
         run: pnpm install --frozen-lockfile
+      - name: Verify patched transitive URL decoder
+        working-directory: frontend
+        run: pnpm exec vitest run src/utils/__tests__/decodeUriComponent.security.spec.ts
       - name: Run pnpm audit
         working-directory: frontend
         run: |

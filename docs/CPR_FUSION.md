@@ -249,9 +249,25 @@ boundary locally, not a global SSRF-check exclusion.
 The Linux application fixture is compiled with `CGO_ENABLED=0` so artifacts
 built on a glibc host can start in its Alpine runtime containers.
 
-The production-dependency audit reports **0 high, 0 critical, 13 moderate and
-2 low** advisories. The Go scan reports **0 reachable vulnerabilities**, with
+The 2026-10-29 production-dependency audit reported **0 high, 0 critical,
+13 moderate and 2 low** advisories. The Go scan reported **0 reachable vulnerabilities**, with
 2 module-level advisories outside the application's detected call paths.
 These residual findings are not a claim that every dependency is vulnerability
 free. The frontend critical suite passes **109 files / 1783 tests**, including
 the added interpolation/srcdoc regression checks.
+
+## URL Decoder Security Fix: 2026-10-30
+
+The transitive dependency chain `@lobehub/icons -> @lobehub/ui -> query-string`
+previously resolved `decode-uri-component` to `0.4.1`.
+`GHSA-qr28-fpjm-wq7f` affects versions through `0.5.0`; a targeted pnpm override
+and regenerated lockfile now resolve vulnerable ranges to the patched `0.5.1`.
+No other dependency versions or CPR relay/billing code changed, and no audit
+exception was added or extended.
+
+The security workflow also checks the decoder resolved through the actual
+consumer dependency chain, valid and malformed URI/query decoding, single-pass
+behavior and a bounded 32,000-run regression in a subprocess with a deadline.
+Those 3 security tests and the 8 CPR client-key tests pass.
+The refreshed production audit gate passes with **0 high, 0 critical,
+12 moderate and 2 low** advisories; the residual advisories are not suppressed.
